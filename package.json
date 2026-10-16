@@ -1,0 +1,21 @@
+{
+  "name": "alex-forge",
+  "version": "0.0.1",
+  "private": false,
+  "license": "MIT",
+  "description": "Forge -- generates and verifies repair artifacts (CLI scripts, later HTML/VSIX) from error logs. Real sandbox verification, independent second verifier, no self-attested evidence.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "typescript": "~5.8.2",
+    "vitest": "^5.0.5"
+  }
+}
