@@ -13,6 +13,47 @@ describe("diagnoseFallback", () => {
     expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 8080 } }]);
   });
 
+  it(
+    "extracts the real port, not a leading timestamp's HH:MM:SS, when the error line is timestamp-prefixed",
+    () => {
+      // A realistic log line, timestamp and all -- the fallback used to misread "20:00:00"'s
+      // ":00" as the listen port before the real "...in use :::3000" was ever reached.
+      const diagnosis = diagnoseFallback(
+        "2026-11-12T20:00:00Z [app] Error: listen EADDRINUSE: address already in use :::3000",
+        "linux",
+      );
+      expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 3000 } }]);
+    },
+  );
+
+  it("extracts the port from an explicit 0.0.0.0/127.0.0.1/localhost listen address form", () => {
+    expect(diagnoseFallback("Error: bind EADDRINUSE 0.0.0.0:8081", "linux").fixPlan).toEqual([
+      { actionId: "free-tcp-port", parameters: { port: 8081 } },
+    ]);
+    expect(diagnoseFallback("Error: bind EADDRINUSE 127.0.0.1:8082", "linux").fixPlan).toEqual([
+      { actionId: "free-tcp-port", parameters: { port: 8082 } },
+    ]);
+    expect(
+      diagnoseFallback("listen EADDRINUSE: address already in use localhost:8083", "linux").fixPlan,
+    ).toEqual([{ actionId: "free-tcp-port", parameters: { port: 8083 } }]);
+  });
+
+  it(
+    "extracts the port from Node's real IPv6-loopback EADDRINUSE message form (::1:PORT, unbracketed, confirmed against a real Node net.Server error)",
+    () => {
+      const diagnosis = diagnoseFallback("Error: listen EADDRINUSE: address already in use ::1:8084", "linux");
+      expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 8084 } }]);
+    },
+  );
+
+  it("only extracts a port from the line(s) that actually matched the port-conflict pattern, not an unrelated line elsewhere in the same log", () => {
+    const diagnosis = diagnoseFallback(
+      "GET /status:9090 200 12ms\nError: listen EADDRINUSE: address already in use :::3000",
+      "linux",
+    );
+    expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 3000 } }]);
+  });
+
   it("honestly reports no action for an unrecognized log instead of guessing", () => {
     const diagnosis = diagnoseFallback("segmentation fault in module xyz at offset 0x1234", "linux");
     expect(diagnosis.fixPlan).toEqual([]);

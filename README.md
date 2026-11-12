@@ -164,6 +164,15 @@ and the first repair mode (`src/modes/repair/`):
   passed the policy engine cleanly before the fix. This passes Phase 9's gate (`docs/ROADMAP.md`
   moves it from `locked` to `planned`); the AgentShield feature itself still has no design or code.
 
+- **Found while demonstrating `forge repair` on a realistic, timestamped log:** the deterministic
+  fallback's port extraction (`extractPort`, `src/modes/repair/diagnose.ts`) used to scan the
+  *entire* log text for any bare `:NN` and could misread a timestamp's own colon-digits (e.g.
+  `20:00:00`'s `:00`) as the listen port, before ever reaching the real `...in use :::3000` later
+  in the same line. Fixed: port extraction is now scoped to only the line(s) that actually matched
+  the port-conflict pattern, and a colon-based match is only trusted when it is anchored to an
+  actual listen-address form (`0.0.0.0`/`127.0.0.1`/`localhost`/a bare `::`/`:::`), never a bare
+  colon-digit pair alone. Covered by new cases in `src/modes/repair/diagnose.test.ts`.
+
 ### Usage
 
 ```bash
