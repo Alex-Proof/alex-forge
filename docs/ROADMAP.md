@@ -13,7 +13,7 @@ and covered by a passing test.
 | 2 | Process runner + Docker sandbox adapter (network disabled, resource limits, cleanup) | done |
 | 3 | CLI contract (`--check`/`--dry-run`/`--fix`/`--verify`/`--json`) + deterministic diagnosis fallback + one fixture | done |
 | 4 | Red/green verification with an independent before/after oracle | done |
-| 5 | Evidence builder + independently implemented second verifier (no shared code with the builder) | planned |
+| 5 | Evidence builder + independently implemented second verifier (no shared code with the builder) | done |
 | 6 | `forge repair` end to end, security regression suite in CI -- CLI MVP done | planned |
 | -- | Distribution: thin Forge MCP server package, `alex-control-layer` tool entry | planned |
 | 7 | Standalone HTML artifacts | not started -- after phase 6 is stable |

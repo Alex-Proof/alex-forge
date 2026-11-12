@@ -4,7 +4,7 @@ Forge turns an error log into a checked repair artifact (CLI script first, HTML 
 extension later) -- and refuses to call anything "verified" unless a real, independent check
 actually ran.
 
-## Status: Phase 4 -- red/green verification with an independent oracle
+## Status: Phase 5 -- evidence, export, independent second verifier, catalog gate
 
 **Implemented:** repository scaffold, TypeScript/CI setup, the type contracts (`src/types/`), the
 policy engine (`src/core/policy/`), a real Docker-backed sandbox runner (`src/core/verification/`),
@@ -26,9 +26,30 @@ and the first repair mode (`src/modes/repair/`):
   a self-trusted marker file passes its *own* self-check, but the independent oracle still catches
   that nothing actually changed, and the overall verdict is `failed`, not `passed`.
 
-**Not implemented yet:** evidence builder, independent second verifier, catalog, export. Nothing
-in this repository can currently produce a catalog-eligible repair artifact end to end. See
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+- `buildEvidence` (`src/core/evidence/`): produces a versioned `evidence.json` strictly from
+  observed results -- the artifact hash is computed over the artifact's own bytes only (never
+  circularly over the evidence itself), and the policy fields come from actually running the
+  Phase 1 policy engine on the real input/output/package content, not from a caller's claim.
+- `exportRepairPackage` (`src/core/export/`): writes a reproducible ZIP (`artifact/`,
+  `evidence.json`, `manifest.json`, `README.md`, `checksums.txt`) atomically (temp name, then
+  rename), with every entry name checked against path traversal / absolute paths before it's
+  ever added to the archive.
+- `independentlyVerify` (`src/core/evidence/independent-verifier.ts`): a second verifier that
+  imports nothing from the evidence builder. It recomputes the artifact hash itself, and
+  re-derives pass/fail from the raw `verification.checks` array rather than trusting
+  `verification.status` as given -- so a forged or buggy "passed" claim whose own checks disagree
+  is still caught.
+- `admitToCatalog` (`src/core/catalog/`): the single, non-model-controlled function allowed to set
+  `status: "approved"`, and it always goes through the independent verifier first.
+- An end-to-end test runs the real free-tcp-port fixture through this entire chain -- diagnose,
+  generate, verify in the sandbox, build evidence, export, re-open from disk, independently
+  re-verify, admit -- and a companion test proves the lying-script case from Phase 4 is refused
+  catalog admission.
+
+**Not implemented yet:** the `forge` CLI itself (`forge repair`/`validate`/`verify`/`evidence`/
+`catalog list`), a persistent catalog store, and the security regression suite wired into CI.
+Everything above exists as library code with real tests, but there is no single command that
+runs the pipeline end to end from a log file on disk. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 No claim stronger than what actually ran in CI is made anywhere in this repository.
 
