@@ -83,15 +83,29 @@ and the first repair mode (`src/modes/repair/`):
   (format-agnostic: every recorded check must have passed, and at least one must exist) --
   HTML artifacts go through the exact same evidence-build, ZIP-export, independent-re-verify, and
   catalog-admission chain as CLI artifacts, proven by a real end-to-end test.
+- `forge repair --format <sh|html>` (`src/cli.ts`): `--format` is now wired all the way through
+  the real CLI entry point, not just available as library functions. `sh` (the default) is the
+  unchanged Docker/red-green path. `html` calls `generateHtmlArtifact` and `verifyHtmlArtifact`
+  instead -- no Docker sandbox is created for this path; the real headless-Chromium process
+  started by `verifyHtmlArtifact` is itself the sandboxed execution environment. Both paths join
+  back into the identical `buildEvidence` -> `exportRepairPackage` ->
+  `readArtifactAndEvidenceFromZip` -> `independentlyVerify` -> `admitToCatalog` chain and the same
+  exit-code semantics (`0` approved, `1` needs_review/rejected, `2` policy block or error).
+  `tests/integration/forge-repair-html.test.ts` drives this end to end through the real `main()`
+  entry point: log in, `repair.html` out inside a real ZIP, `forge catalog list` shows the entry.
 
 ### Usage
 
 ```bash
 npm install
 npm run build
-node bin/forge.mjs repair --log ./error.log --os linux --output ./out [--json] [--catalog-dir ./.forge/catalog]
+node bin/forge.mjs repair --log ./error.log --os linux --output ./out [--format sh|html] [--json] [--catalog-dir ./.forge/catalog]
 node bin/forge.mjs catalog list [--json] [--catalog-dir ./.forge/catalog]
 ```
+
+`--format` defaults to `sh` (a CLI script, verified in a real Docker sandbox). `--format html`
+produces a standalone `repair.html` report instead, verified in a real headless-Chromium process
+-- no Docker required for that path.
 
 Forge never installs or changes anything on your system by itself. `forge repair` only ever
 writes to `--output` (and the catalog directory); the generated script inside the resulting ZIP
@@ -104,9 +118,6 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
 - Only `--os linux` has a generated-script template; `windows`/`macos` are rejected with a clear
   error, not silently mis-generated.
 - The VS Code extension format (Phase 8) is not started.
-- `forge repair` itself still only ever produces the CLI script; `generateHtmlArtifact` and
-  `verifyHtmlArtifact` are complete, tested library code (including the full evidence/export/
-  catalog chain), but there is no `--format html` or equivalent CLI flag to invoke them yet.
 - No LLM provider is wired in yet -- only the deterministic fallback. `validateDiagnosis` is
   already the intended gate for a future model response, so adding a provider later doesn't
   change the trust boundary.

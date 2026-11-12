@@ -3,10 +3,12 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { policyEngine } from "./core/policy/policy.js";
 import { scanAndRedactSecrets } from "./core/policy/redact.js";
-import { diagnoseFallback, generateCliArtifact } from "./modes/repair/diagnose.js";
+import { diagnoseFallback, generateCliArtifact, generateHtmlArtifact } from "./modes/repair/diagnose.js";
 import { getRegisteredAction } from "./modes/repair/actions.js";
 import { createSandbox } from "./core/verification/sandbox.js";
 import { verifyRedGreen } from "./core/verification/verify-cli.js";
+import { verifyHtmlArtifact } from "./core/verification/verify-html.js";
+import type { VerificationSummary } from "./types/verification.js";
 import { buildEvidence } from "./core/evidence/evidence.js";
 import { exportRepairPackage, readArtifactAndEvidenceFromZip } from "./core/export/zip-exporter.js";
 import { independentlyVerify } from "./core/evidence/independent-verifier.js";
@@ -41,6 +43,7 @@ interface RepairArgs {
   outputDir: string;
   json: boolean;
   catalogDir: string;
+  format: "sh" | "html";
 }
 
 function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
@@ -49,6 +52,7 @@ function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
   let outputDir: string | undefined;
   let catalogDir = path.join(process.cwd(), ".forge", "catalog");
   let json = false;
+  let format: RepairArgs["format"] = "sh";
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -67,6 +71,14 @@ function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
       case "--output":
         outputDir = args[++i];
         break;
+      case "--format": {
+        const value = args[++i];
+        if (value !== "sh" && value !== "html") {
+          return { error: `invalid --format value: ${value ?? "(missing)"}` };
+        }
+        format = value;
+        break;
+      }
       case "--catalog-dir":
         catalogDir = args[++i] ?? catalogDir;
         break;
@@ -82,7 +94,7 @@ function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
   if (!os) return { error: "missing required flag: --os" };
   if (!outputDir) return { error: "missing required flag: --output" };
 
-  return { logPath, os, outputDir, json, catalogDir };
+  return { logPath, os, outputDir, json, catalogDir, format };
 }
 
 /**
@@ -97,7 +109,7 @@ async function runRepair(args: string[]): Promise<CliResult> {
   if ("error" in parsed) {
     return fail(2, `error: ${parsed.error}\n`);
   }
-  const { logPath, os, outputDir, json, catalogDir } = parsed;
+  const { logPath, os, outputDir, json, catalogDir, format } = parsed;
 
   let rawLogText: string;
   try {
@@ -120,11 +132,6 @@ async function runRepair(args: string[]): Promise<CliResult> {
     return report(1, json, { status: "needs_review", diagnosis }, `no registered action matched this log: ${diagnosis.rootCause}\n`);
   }
 
-  const artifact = generateCliArtifact(diagnosis);
-  if (!artifact.ok) {
-    return fail(2, `error: ${artifact.reason}\n`);
-  }
-
   const step = diagnosis.fixPlan[0];
   if (!step) {
     return fail(2, "error: diagnosis has no fix step despite a non-empty fixPlan\n");
@@ -133,41 +140,74 @@ async function runRepair(args: string[]): Promise<CliResult> {
   if (!action) {
     return fail(2, `error: fixPlan references unregistered actionId: ${step.actionId}\n`);
   }
-  const fixture = action.buildFixture(step.parameters);
 
-  const sandbox = await createSandbox({
-    network: "disabled",
-    readOnlyRoot: true,
-    cpuLimit: "0.5",
-    memoryLimitMb: 128,
-    processLimit: 32,
-    image: fixture.sandboxImage,
-  });
+  let artifactFileName: string;
+  let artifactContent: string;
+  let verification: VerificationSummary;
+  let sandboxImageForEvidence: string;
 
-  let verification;
-  try {
-    await copyFile(fixture.oracleAssetSourcePath, path.join(sandbox.hostWorkDir, fixture.oracleAssetStagedName));
-    await writeFile(path.join(sandbox.hostWorkDir, artifact.fileName), artifact.content, { mode: 0o755 });
+  if (format === "sh") {
+    const artifact = generateCliArtifact(diagnosis);
+    if (!artifact.ok) {
+      return fail(2, `error: ${artifact.reason}\n`);
+    }
+    const fixture = action.buildFixture(step.parameters);
 
-    verification = await verifyRedGreen(sandbox, {
-      setupCommand: fixture.setupCommand,
-      oracleCommand: fixture.oracleCommand,
-      cliCommand: (flag) => `sh ${artifact.fileName} ${flag}`,
+    const sandbox = await createSandbox({
+      network: "disabled",
+      readOnlyRoot: true,
+      cpuLimit: "0.5",
+      memoryLimitMb: 128,
+      processLimit: 32,
+      image: fixture.sandboxImage,
     });
-  } finally {
-    await sandbox.destroy();
+
+    try {
+      await copyFile(fixture.oracleAssetSourcePath, path.join(sandbox.hostWorkDir, fixture.oracleAssetStagedName));
+      await writeFile(path.join(sandbox.hostWorkDir, artifact.fileName), artifact.content, { mode: 0o755 });
+
+      verification = await verifyRedGreen(sandbox, {
+        setupCommand: fixture.setupCommand,
+        oracleCommand: fixture.oracleCommand,
+        cliCommand: (flag) => `sh ${artifact.fileName} ${flag}`,
+      });
+    } finally {
+      await sandbox.destroy();
+    }
+    artifactFileName = artifact.fileName;
+    artifactContent = artifact.content;
+    sandboxImageForEvidence = fixture.sandboxImage;
+  } else {
+    const artifact = generateHtmlArtifact(diagnosis);
+    if (!artifact.ok) {
+      return fail(2, `error: ${artifact.reason}\n`);
+    }
+    // The HTML report's default-render check needs the same numeric port value the diagnosis
+    // fed into the template. Only free-tcp-port is registered today, and its schema guarantees
+    // `port` is present and numeric; a future action without one would fail closed right here
+    // rather than silently skipping the check.
+    const portParam = step.parameters.port;
+    if (typeof portParam !== "number") {
+      return fail(2, `error: action "${step.actionId}" has no numeric port parameter required for HTML verification\n`);
+    }
+    // No Docker sandbox here: verifyHtmlArtifact runs a real headless-Chromium process itself,
+    // which is its own sandboxed execution environment (see verify-html.ts).
+    verification = await verifyHtmlArtifact({ html: artifact.content, expectedDefaultPort: portParam });
+    artifactFileName = artifact.fileName;
+    artifactContent = artifact.content;
+    sandboxImageForEvidence = "headless-chromium";
   }
 
   const artifactId = `forge-repair-${step.actionId}-${randomUUID()}`;
-  const artifactBytes = new TextEncoder().encode(artifact.content);
+  const artifactBytes = new TextEncoder().encode(artifactContent);
   const evidence = buildEvidence({
     artifactId,
-    artifactFileName: artifact.fileName,
-    artifactFormat: "cli",
+    artifactFileName,
+    artifactFormat: format === "sh" ? "cli" : "html",
     artifactContent: artifactBytes,
     sourceLogRedactedText: redactedText,
     targetOS: os,
-    sandboxImage: fixture.sandboxImage,
+    sandboxImage: sandboxImageForEvidence,
     verification,
     forgeVersion: FORGE_VERSION,
     templateVersion: "1.0.0",
@@ -187,14 +227,19 @@ async function runRepair(args: string[]): Promise<CliResult> {
     );
   }
 
+  const readmeContent =
+    format === "sh"
+      ? `# ${artifactId}\n\nGenerated by Forge ${FORGE_VERSION}. See evidence.json for the full, independently re-checked verification record.\n\nThis artifact is not installed or run automatically. Review it, then run it yourself:\n\n\`\`\`\nsh ${artifactFileName} --check\nsh ${artifactFileName} --dry-run\nsh ${artifactFileName} --fix      # only after you approve the plan\nsh ${artifactFileName} --verify\n\`\`\`\n`
+      : `# ${artifactId}\n\nGenerated by Forge ${FORGE_VERSION}. See evidence.json for the full, independently re-checked verification record.\n\nOpen ${artifactFileName} in a browser. It does not run anything on your system by itself: it can only show you the already-verified repair script as a download and validate a port number client-side.\n`;
+
   const { zipPath } = await exportRepairPackage(outputDir, artifactId, {
-    artifactFileName: artifact.fileName,
+    artifactFileName,
     artifactBytes,
     evidence,
-    readmeContent: `# ${artifactId}\n\nGenerated by Forge ${FORGE_VERSION}. See evidence.json for the full, independently re-checked verification record.\n\nThis artifact is not installed or run automatically. Review it, then run it yourself:\n\n\`\`\`\nsh ${artifact.fileName} --check\nsh ${artifact.fileName} --dry-run\nsh ${artifact.fileName} --fix      # only after you approve the plan\nsh ${artifact.fileName} --verify\n\`\`\`\n`,
+    readmeContent,
   });
 
-  const readBack = readArtifactAndEvidenceFromZip(zipPath, artifact.fileName);
+  const readBack = readArtifactAndEvidenceFromZip(zipPath, artifactFileName);
   const reVerification = independentlyVerify(readBack.evidence, readBack.artifactBytes);
   if (!reVerification.verified) {
     return fail(
