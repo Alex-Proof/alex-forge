@@ -4,16 +4,20 @@ Forge turns an error log into a checked repair artifact (CLI script first, HTML 
 extension later) -- and refuses to call anything "verified" unless a real, independent check
 actually ran.
 
-## Status: Phase 1 -- policy engine
+## Status: Phase 2 -- process runner and Docker sandbox
 
 **Implemented:** repository scaffold, TypeScript project setup, CI (type-check + test), the type
-contracts for diagnosis/policy/verification/catalog (`src/types/`), and the policy engine
-(`src/core/policy/`): input/path/command/file inspection with secret detection and redaction,
-prompt-injection detection, and fail-closed error handling, backed by unit tests.
+contracts for diagnosis/policy/verification/catalog (`src/types/`), the policy engine
+(`src/core/policy/`), and a real Docker-backed sandbox runner (`src/core/verification/`):
+network disabled, read-only root, CPU/memory/process-count limits, timeout and output-byte
+enforcement with guaranteed container and workspace cleanup, and a policy check on every command
+before it is ever spawned. A sandbox that fails to start always resolves to `runner_error`, never
+to anything that could be mistaken for a passing result. Covered by real Docker integration tests
+(no mocked sandbox).
 
-**Not implemented yet:** sandbox runner, diagnosis fallback, CLI, evidence builder, independent
-verifier, catalog. Nothing in this repository can currently generate or verify a repair artifact.
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the planned order.
+**Not implemented yet:** diagnosis fallback, CLI, red/green verification oracle, evidence builder,
+independent verifier, catalog. Nothing in this repository can currently generate or verify a
+repair artifact end to end. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the planned order.
 
 No claim stronger than what actually ran in CI is made anywhere in this repository.
 
@@ -49,6 +53,9 @@ npm install
 npm run lint   # tsc --noEmit
 npm test       # vitest run
 ```
+
+`npm test` now needs a reachable Docker daemon: the sandbox tests run real containers rather than
+a mock, per this project's "no fake verification" rule.
 
 ## License
 
