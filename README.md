@@ -4,14 +4,16 @@ Forge turns an error log into a checked repair artifact (CLI script first, HTML 
 extension later) -- and refuses to call anything "verified" unless a real, independent check
 actually ran.
 
-## Status: Phase 0 -- scaffold
+## Status: Phase 1 -- policy engine
 
 **Implemented:** repository scaffold, TypeScript project setup, CI (type-check + test), the type
-contracts for diagnosis/policy/verification/catalog (`src/types/`).
+contracts for diagnosis/policy/verification/catalog (`src/types/`), and the policy engine
+(`src/core/policy/`): input/path/command/file inspection with secret detection and redaction,
+prompt-injection detection, and fail-closed error handling, backed by unit tests.
 
-**Not implemented yet:** policy engine, sandbox runner, diagnosis fallback, CLI, evidence builder,
-independent verifier, catalog. Nothing in this repository can currently generate or verify a
-repair artifact. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the planned order.
+**Not implemented yet:** sandbox runner, diagnosis fallback, CLI, evidence builder, independent
+verifier, catalog. Nothing in this repository can currently generate or verify a repair artifact.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the planned order.
 
 No claim stronger than what actually ran in CI is made anywhere in this repository.
 

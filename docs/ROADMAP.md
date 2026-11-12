@@ -9,7 +9,7 @@ and covered by a passing test.
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Repository scaffold, TS/test/CI setup, type contracts | done |
-| 1 | Policy engine (`inspectText`/`inspectPath`/`inspectCommand`/`inspectFiles`) + unit tests | planned |
+| 1 | Policy engine (`inspectText`/`inspectPath`/`inspectCommand`/`inspectFiles`) + unit tests | done |
 | 2 | Process runner + Docker sandbox adapter (network disabled, resource limits, cleanup) | planned |
 | 3 | CLI contract (`--check`/`--dry-run`/`--fix`/`--verify`/`--json`) + deterministic diagnosis fallback + one fixture | planned |
 | 4 | Red/green verification with an independent before/after oracle | planned |
