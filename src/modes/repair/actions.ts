@@ -1,4 +1,10 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/** Repo-root-relative tests/fixtures/, resolved from this module's own location. */
+const FIXTURES_DIR = path.resolve(__dirname, "../../../tests/fixtures");
 
 /**
  * Registered repair actions. This is the allowlist required by the blueprint: a diagnosis may
@@ -136,11 +142,38 @@ esac
 `;
 }
 
+/**
+ * Everything Forge's own verification needs to reproduce this action's fault in a disposable
+ * sandbox and confirm the fix independently. This is never run against the user's real system --
+ * it is Forge's synthetic reproduction of the fault type, used to prove the generated script's
+ * own logic is correct before anything is handed to the user. The oracle asset must be
+ * implemented independently of the generated script (see tests/fixtures/*-oracle.mjs).
+ */
+export interface ActionFixture {
+  setupCommand: string;
+  oracleCommand: string;
+  oracleAssetSourcePath: string;
+  oracleAssetStagedName: string;
+  sandboxImage: string;
+}
+
 export interface RegisteredAction {
   actionId: string;
   parametersSchema: z.ZodTypeAny;
   /** Re-validates `rawParameters` itself; never trusts an already-typed caller. */
   generateScript: (rawParameters: unknown) => string;
+  buildFixture: (rawParameters: unknown) => ActionFixture;
+}
+
+function buildFreeTcpPortFixture(rawParameters: unknown): ActionFixture {
+  const { port } = FreeTcpPortParametersSchema.parse(rawParameters);
+  return {
+    setupCommand: `nc -l -p ${port} &`,
+    oracleCommand: `node tcp-port-oracle.mjs ${port}`,
+    oracleAssetSourcePath: path.join(FIXTURES_DIR, "tcp-port-oracle.mjs"),
+    oracleAssetStagedName: "tcp-port-oracle.mjs",
+    sandboxImage: "node:22-alpine",
+  };
 }
 
 export const ACTION_REGISTRY: Readonly<Record<string, RegisteredAction>> = Object.freeze({
@@ -148,6 +181,7 @@ export const ACTION_REGISTRY: Readonly<Record<string, RegisteredAction>> = Objec
     actionId: "free-tcp-port",
     parametersSchema: FreeTcpPortParametersSchema,
     generateScript: generateFreeTcpPortScript,
+    buildFixture: buildFreeTcpPortFixture,
   },
 });
 

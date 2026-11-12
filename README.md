@@ -4,7 +4,7 @@ Forge turns an error log into a checked repair artifact (CLI script first, HTML 
 extension later) -- and refuses to call anything "verified" unless a real, independent check
 actually ran.
 
-## Status: Phase 5 -- evidence, export, independent second verifier, catalog gate
+## Status: Phase 6 -- CLI MVP complete (`forge repair`, log to ZIP)
 
 **Implemented:** repository scaffold, TypeScript/CI setup, the type contracts (`src/types/`), the
 policy engine (`src/core/policy/`), a real Docker-backed sandbox runner (`src/core/verification/`),
@@ -46,10 +46,51 @@ and the first repair mode (`src/modes/repair/`):
   re-verify, admit -- and a companion test proves the lying-script case from Phase 4 is refused
   catalog admission.
 
-**Not implemented yet:** the `forge` CLI itself (`forge repair`/`validate`/`verify`/`evidence`/
-`catalog list`), a persistent catalog store, and the security regression suite wired into CI.
-Everything above exists as library code with real tests, but there is no single command that
-runs the pipeline end to end from a log file on disk. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+- `forge repair` (`src/cli.ts`, shim at `bin/forge.mjs`): the actual end-to-end command. Reads a
+  log file, policy-checks it (fail closed, before any redaction happens -- redacting first and
+  checking policy second would let a redacted secret slip past the block it should trigger),
+  diagnoses, generates, runs the real sandboxed red/green verification, builds evidence, exports
+  a ZIP, re-opens it from disk, independently re-verifies it, and only then writes a catalog
+  record. A log forge can't diagnose exits `1` with `needs_review` instead of guessing; a failed
+  verification exits `1` with `rejected` and only the evidence (never the script) is kept under
+  `<output>/rejected/`; anything policy-blocked or structurally invalid exits `2`.
+- `forge catalog list`: lists the (file-based, append-only) catalog records written by successful
+  `forge repair` runs.
+- `tests/integration/forge-repair.test.ts`: the literal "log to ZIP" end-to-end test, driving the
+  real CLI entry point against a real Docker sandbox -- nothing mocked.
+- `tests/security/regression.test.ts`: a consolidated regression suite covering the blueprint's
+  security test categories (prompt injection, path traversal, secret leakage, dangerous shell
+  patterns, output-policy bypass, resource exhaustion, forged evidence, catalog bypass), run in CI
+  on every push alongside everything else.
+
+### Usage
+
+```bash
+npm install
+npm run build
+node bin/forge.mjs repair --log ./error.log --os linux --output ./out [--json] [--catalog-dir ./.forge/catalog]
+node bin/forge.mjs catalog list [--json] [--catalog-dir ./.forge/catalog]
+```
+
+Forge never installs or changes anything on your system by itself. `forge repair` only ever
+writes to `--output` (and the catalog directory); the generated script inside the resulting ZIP
+is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--verify`.
+
+### Known limitations (honest, as of this phase)
+
+- Exactly one fault type is recognized: a TCP port held by another process (`free-tcp-port`).
+  Everything else correctly falls through to `needs_review` rather than a guess.
+- Only `--os linux` has a generated-script template; `windows`/`macos` are rejected with a clear
+  error, not silently mis-generated.
+- Only the CLI artifact format exists; HTML and the VS Code extension are Phase 7/8, not started.
+- No LLM provider is wired in yet -- only the deterministic fallback. `validateDiagnosis` is
+  already the intended gate for a future model response, so adding a provider later doesn't
+  change the trust boundary.
+- The catalog is a flat directory of JSON files, not a database -- adequate for this MVP, not for
+  scale.
+- `forge validate`/`forge verify`/`forge evidence` as separate subcommands (blueprint section 12)
+  are not implemented; everything they'd expose is already visible inside the exported ZIP's
+  `evidence.json`.
 
 No claim stronger than what actually ran in CI is made anywhere in this repository.
 
