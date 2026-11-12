@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { diagnoseFallback, generateCliArtifact, validateDiagnosis } from "./diagnose.js";
+import { diagnoseFallback, generateCliArtifact, proposeDiagnosis, validateDiagnosis } from "./diagnose.js";
+import type { DiagnosisProvider, DiagnosisProviderResponse } from "../../core/diagnosis-provider/provider.js";
 
 describe("diagnoseFallback", () => {
   it("recognizes a port-in-use log line and proposes the registered free-tcp-port action", () => {
@@ -229,5 +230,76 @@ describe("generateCliArtifact", () => {
       needsHumanApproval: true,
     });
     expect(result.ok).toBe(false);
+  });
+});
+
+function fakeProvider(respond: () => Promise<DiagnosisProviderResponse | null>): DiagnosisProvider {
+  return { name: "fake-test-provider", propose: respond };
+}
+
+const PORT_LOG = "Error: listen EADDRINUSE: address already in use :::3000";
+
+// proposeDiagnosis is the one place a provider and the mandatory fallback meet -- these tests use
+// a hand-written fake DiagnosisProvider (no network, no real model) specifically to pin down that
+// control flow in isolation. The real provider's own behavior against the real OpenAI API is
+// covered separately and for real in openai-provider.test.ts.
+describe("proposeDiagnosis", () => {
+  it("uses the deterministic fallback when no provider is given at all", async () => {
+    const outcome = await proposeDiagnosis({ redactedLogText: PORT_LOG, targetOS: "linux" });
+    expect(outcome.modelProvider).toBe("fallback-deterministic");
+    expect(outcome.modelVersion).toBeNull();
+    expect(outcome.diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 3000 } }]);
+  });
+
+  it("uses the provider's response when it validates", async () => {
+    const provider = fakeProvider(async () => ({
+      candidate: {
+        issueTitle: "from provider",
+        rootCause: "from provider",
+        targetOS: "linux",
+        checkPlan: [],
+        fixPlan: [{ actionId: "free-tcp-port", parameters: { port: 4242 } }],
+        preconditions: [],
+        riskLevel: "low",
+        needsHumanApproval: true,
+      },
+      modelVersion: "fake-model-v1",
+    }));
+    const outcome = await proposeDiagnosis({ redactedLogText: PORT_LOG, targetOS: "linux", provider });
+    expect(outcome.modelProvider).toBe("fake-test-provider");
+    expect(outcome.modelVersion).toBe("fake-model-v1");
+    expect(outcome.diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 4242 } }]);
+  });
+
+  it("falls back to the deterministic diagnosis when the provider returns null (e.g. network failure)", async () => {
+    const provider = fakeProvider(async () => null);
+    const outcome = await proposeDiagnosis({ redactedLogText: PORT_LOG, targetOS: "linux", provider });
+    expect(outcome.modelProvider).toBe("fallback-deterministic");
+    expect(outcome.diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 3000 } }]);
+  });
+
+  it("falls back to the deterministic diagnosis when the provider's response references an unregistered action (never trusted just because a provider said so)", async () => {
+    const provider = fakeProvider(async () => ({
+      candidate: {
+        issueTitle: "malicious or buggy provider output",
+        rootCause: "x",
+        targetOS: "linux",
+        checkPlan: [],
+        fixPlan: [{ actionId: "rm-rf-root", parameters: {} }],
+        preconditions: [],
+        riskLevel: "low",
+        needsHumanApproval: false,
+      },
+      modelVersion: "fake-model-v1",
+    }));
+    const outcome = await proposeDiagnosis({ redactedLogText: PORT_LOG, targetOS: "linux", provider });
+    expect(outcome.modelProvider).toBe("fallback-deterministic");
+    expect(outcome.diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 3000 } }]);
+  });
+
+  it("falls back to the deterministic diagnosis when the provider's response fails schema validation", async () => {
+    const provider = fakeProvider(async () => ({ candidate: { not: "a diagnosis" }, modelVersion: "fake-model-v1" }));
+    const outcome = await proposeDiagnosis({ redactedLogText: PORT_LOG, targetOS: "linux", provider });
+    expect(outcome.modelProvider).toBe("fallback-deterministic");
   });
 });

@@ -208,12 +208,53 @@ and the first repair mode (`src/modes/repair/`):
     negative control that a pidfile holding a genuinely live PID is correctly left untouched
     (`not_verified`, never a guessed pass).
 
+- **LLM diagnosis provider (optional, OpenAI).** Blueprint section 20: "Modell ist optional;
+  Fallback ist verpflichtend" -- the deterministic fallback is still the mandatory baseline; a
+  model is only ever layered on top of it, never a replacement for it.
+  - `src/core/diagnosis-provider/provider.ts` defines the swappable `DiagnosisProvider` interface
+    the blueprint calls for; `openai-provider.ts` is the one real implementation so far (Chat
+    Completions API, JSON-mode response). `src/modes/repair/diagnose.ts`'s `proposeDiagnosis` is
+    the single place a provider and the fallback meet.
+  - **A model response is never trusted more than the fallback's own output.** Both are just an
+    untrusted `candidate` object until `validateDiagnosis` says otherwise -- the exact same gate,
+    not a separate or weaker one. A response referencing an unregistered `actionId`, or one that
+    fails schema validation, silently falls back to the deterministic diagnosis; it is never
+    partially trusted or retried with a "fixed" prompt.
+  - **Never throws, never blocks on a broken model.** Any missing `OPENAI_API_KEY`, network
+    failure, timeout (20s), non-2xx response, or unparseable JSON resolves to the fallback, not an
+    error -- a missing/broken model is exactly the case the mandatory fallback exists for.
+  - **The model only ever sees the already-redacted log text** -- the same text the real,
+    already-passed input policy check in `cli.ts` ran on, never the raw log. Its system prompt
+    explicitly states the log is data, not instructions, and names only the two currently
+    registered actions and their exact parameter shapes; it is never told or shown anything about
+    future, unregistered, or hypothetical actions.
+  - `--no-model` forces the deterministic fallback outright, regardless of whether a key is set.
+  - `evidence.json`'s `provenance.modelProvider`/`modelVersion` now honestly reflect what actually
+    ran (`"openai"` + the real model id from the response, or `"fallback-deterministic"` + `null`)
+    -- these used to be hardcoded to `"fallback-deterministic"`/`null` regardless of what happened,
+    since no model path existed yet to report honestly about.
+  - Tested for real against the real OpenAI API, not mocked (`src/core/diagnosis-provider/openai-provider.test.ts`,
+    skipped visibly rather than silently whenever `OPENAI_API_KEY` isn't set, which is the normal
+    `npm test`/CI case): a real port-conflict log correctly proposes `free-tcp-port` with the right
+    port, an unmatched log honestly proposes an empty `fixPlan` rather than guessing, and a direct
+    prompt-injection attempt embedded in the log text (instructing it to propose an unregistered
+    `"rm-rf-root"` action and disable `needsHumanApproval`) is resisted by the model and, as a
+    backstop regardless of what the model does, would be refused by `validateDiagnosis` either
+    way. Also verified manually end to end through the real CLI: `evidence.json`'s provenance
+    correctly says `"openai"` when the model actually ran, and `--no-model` correctly forces
+    `"fallback-deterministic"` even with a valid key present.
+  - This sandboxed dev environment's own outbound network needs `NODE_USE_ENV_PROXY=1` set for
+    Node's `fetch` to reach `api.openai.com` through its proxy at all -- a property of this
+    environment's network policy, not of real deployments, so it is deliberately never baked into
+    the shipped provider code itself (plain `fetch`, no proxy-awareness, which is the correct,
+    dependency-free behavior for a normal end user's own machine).
+
 ### Usage
 
 ```bash
 npm install
 npm run build
-node bin/forge.mjs repair --log ./error.log --os linux --output ./out [--format sh|html|extension] [--json] [--catalog-dir ./.forge/catalog]
+node bin/forge.mjs repair --log ./error.log --os linux --output ./out [--format sh|html|extension] [--json] [--catalog-dir ./.forge/catalog] [--no-model]
 node bin/forge.mjs catalog list [--json] [--catalog-dir ./.forge/catalog]
 ```
 
@@ -222,6 +263,10 @@ produces a standalone `repair.html` report instead, verified in a real headless-
 `--format extension` produces a `repair.vsix` VS Code extension companion instead, verified by a
 real `@vscode/vsce` packaging run and, where the environment allows it, a real VS Code Extension
 Host launch. Neither `html` nor `extension` needs Docker.
+
+Set `OPENAI_API_KEY` to let an OpenAI model propose the diagnosis instead of (ahead of) the
+deterministic fallback; `--no-model` forces the fallback regardless. See "LLM diagnosis provider"
+below for exactly what trust boundary this does and doesn't cross.
 
 Forge never installs or changes anything on your system by itself. `forge repair` only ever
 writes to `--output` (and the catalog directory); the generated script inside the resulting ZIP
@@ -248,9 +293,17 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
   verification that didn't happen; through the CLI this surfaces as `forge repair --format
   extension` exiting `2` with "independent re-verification ... failed" instead of a silent
   `approved`.
-- No LLM provider is wired in yet -- only the deterministic fallback. `validateDiagnosis` is
-  already the intended gate for a future model response, so adding a provider later doesn't
-  change the trust boundary.
+- Only one real `DiagnosisProvider` exists (OpenAI). Adding a second (e.g. Gemini, Anthropic)
+  needs its own implementation of the same interface; `proposeDiagnosis` itself is already
+  provider-agnostic.
+- `ALLOWED_ACTIONS_PROMPT` in `openai-provider.ts` is hand-maintained prompt text, not derived
+  from `ACTION_REGISTRY`'s zod schemas -- a third registered action needs this prompt updated by
+  hand, or the model simply won't know it exists (it will still never be able to *invent* an
+  unregistered action either way, since `validateDiagnosis` is the real backstop regardless of
+  what the prompt does or doesn't mention).
+- The model is only ever asked to propose a diagnosis; nothing about `--format html`/`extension`
+  or either action's own HTML/extension templates changes based on whether a model or the
+  fallback produced the diagnosis -- same generation code either way.
 - The catalog is a flat directory of JSON files, not a database -- adequate for this MVP, not for
   scale.
 - `forge validate`/`forge verify`/`forge evidence` as separate subcommands (blueprint section 12)
@@ -310,6 +363,8 @@ mock, per this project's "no fake verification" rule; where the extension runtim
 prerequisites aren't met, it degrades to an honestly-reported `skipped` check instead of failing
 the whole suite (see "Known limitations" above). CI runs `npx playwright install --with-deps
 chromium` and installs `xvfb` before the test step, and caches `.vscode-test/` across runs.
+`OPENAI_API_KEY` is optional: its three real-API tests in `openai-provider.test.ts` are visibly
+skipped (not silently) without it, both locally and in CI.
 
 ## License
 
