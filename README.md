@@ -4,7 +4,7 @@ Forge turns an error log into a checked repair artifact (CLI script first, HTML 
 extension later) -- and refuses to call anything "verified" unless a real, independent check
 actually ran.
 
-## Status: Phase 3 -- CLI contract, deterministic diagnosis, first fixture
+## Status: Phase 4 -- red/green verification with an independent oracle
 
 **Implemented:** repository scaffold, TypeScript/CI setup, the type contracts (`src/types/`), the
 policy engine (`src/core/policy/`), a real Docker-backed sandbox runner (`src/core/verification/`),
@@ -16,14 +16,19 @@ and the first repair mode (`src/modes/repair/`):
   otherwise honestly reports "no registered action matches" instead of guessing
 - a CLI script generator implementing the five-flag contract (`--check`/`--dry-run`/`--fix`/
   `--verify`/`--json`) with exit codes `0`/`1`/`2` per the documented semantics
-- a real, end-to-end fixture: the generated script is run against an actual held TCP port inside
-  the Phase 2 Docker sandbox, proving `--check` detects the fault, `--dry-run` reports a plan
-  without mutating anything (re-checked to confirm), `--fix` clears it, and `--verify` confirms it
+- `verifyRedGreen` (`src/core/verification/verify-cli.ts`): runs the full precondition/check/
+  dry-run/fix/postcondition/verify protocol and cross-checks every state transition against
+  `tests/fixtures/tcp-port-oracle.mjs`, an oracle deliberately implemented in a different
+  language, reading `/proc/net/tcp` directly instead of reusing the generated script's own
+  `netstat`-based check. A sandbox or policy failure resolves to `not_verified`/`blocked`, and a
+  fault that can't be reproduced resolves to `not_verified` -- never to a guessed pass.
+- a negative-control test proves the point: a deliberately "lying" script that fakes success via
+  a self-trusted marker file passes its *own* self-check, but the independent oracle still catches
+  that nothing actually changed, and the overall verdict is `failed`, not `passed`.
 
-**Not implemented yet:** an *independent* state oracle (Phase 4 -- today's fixture checks state the
-same way the generated script does, which is not yet the required independent implementation),
-evidence builder, independent second verifier, catalog. Nothing in this repository can currently
-produce a catalog-eligible repair artifact end to end. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Not implemented yet:** evidence builder, independent second verifier, catalog, export. Nothing
+in this repository can currently produce a catalog-eligible repair artifact end to end. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 No claim stronger than what actually ran in CI is made anywhere in this repository.
 
