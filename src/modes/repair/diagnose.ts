@@ -39,6 +39,8 @@ const PORT_IN_USE_PATTERNS = [
   /EADDRINUSE/i,
   /address already in use/i,
   /port\s+(\d{1,5})\s+(?:is\s+)?(?:already\s+)?in\s+use/i,
+  // Docker's own phrasing (`docker run -p`/compose port-mapping conflicts) never says "in use".
+  /port\s+(?:is\s+)?already\s+allocated/i,
 ];
 
 function isValidPort(port: number): boolean {
@@ -59,6 +61,12 @@ function isValidPort(port: number): boolean {
  * address itself, so it still requires the following ":" + digits to be the actual port -- a
  * plain decimal timestamp never contains two consecutive colons, so it can never trigger this
  * branch by coincidence.
+ *
+ * A bare ":PORT" with no address literal at all is *also* trusted, but only when it is anchored
+ * right after a literal "tcp"/"tcp6"/"udp"/"udp6" -- Go's standard net package logs exactly this
+ * shape ("listen tcp :8080: bind: address already in use"), with no 0.0.0.0/127.0.0.1/::
+ * anywhere in the message. A timestamp never contains "tcp"/"udp", so this cannot collide with
+ * the same ambiguity the address-literal requirement above exists to rule out.
  */
 function extractPort(logText: string): number | null {
   const relevantLines = logText
@@ -67,10 +75,10 @@ function extractPort(logText: string): number | null {
   const scopedText = relevantLines.length > 0 ? relevantLines.join("\n") : logText;
 
   const addressPrefixedMatch = scopedText.match(
-    /(?:0\.0\.0\.0|127\.0\.0\.1|localhost|::[0-9a-fA-F]{0,4})\s*:\s*(\d{2,5})\b/i,
+    /(?:0\.0\.0\.0|127\.0\.0\.1|localhost|::[0-9a-fA-F]{0,4})\s*:\s*(\d{2,5})\b|(?:tcp6?|udp6?)\s*:\s*(\d{2,5})\b/i,
   );
-  if (addressPrefixedMatch?.[1]) {
-    const port = Number.parseInt(addressPrefixedMatch[1], 10);
+  if (addressPrefixedMatch) {
+    const port = Number.parseInt(addressPrefixedMatch[1] ?? addressPrefixedMatch[2] ?? "", 10);
     if (isValidPort(port)) {
       return port;
     }
@@ -85,10 +93,33 @@ function extractPort(logText: string): number | null {
   return null;
 }
 
+// Covers both the generic daemon phrasing ("PID file ... already exists") and PostgreSQL's own
+// wording ("lock file ... already exists"). Deliberately requires an absolute-path-looking,
+// ".pid"-suffixed capture -- a bare filename alone ("postmaster.pid" with no directory) doesn't
+// tell Forge enough to safely act on, so that case honestly falls through to needs_review rather
+// than guessing a location, the same "never guess" discipline extractPort already follows.
+const STALE_PIDFILE_PATTERN = /\b(?:pid|lock)\s*file\s*["']?(\/[A-Za-z0-9_\-./]+\.pid)["']?\s*(?:already\s+)?exists/i;
+
 /**
- * Deterministic, offline diagnosis. No model call, no network access. Recognizes exactly one
- * fault pattern for now (a TCP port held by another process) and otherwise honestly reports that
- * it could not match a registered action, rather than guessing a fix.
+ * Only `/tmp/<name>.pid` is currently a registered, verifiable action (see
+ * ClearStalePidfileParametersSchema in actions.ts for why). A real absolute path mentioned
+ * anywhere else (e.g. the very common `/var/run/...`) is honestly reported as unmatched rather
+ * than silently rewritten to a different location than what the log actually said.
+ */
+function extractTmpPidFilePath(logText: string): string | null {
+  const match = STALE_PIDFILE_PATTERN.exec(logText);
+  const candidate = match?.[1];
+  if (candidate && /^\/tmp\/[A-Za-z0-9_-]+\.pid$/.test(candidate)) {
+    return candidate;
+  }
+  return null;
+}
+
+/**
+ * Deterministic, offline diagnosis. No model call, no network access. Recognizes two fault
+ * patterns (a TCP port held by another process, and a stale PID/lock file under /tmp blocking
+ * startup) and otherwise honestly reports that it could not match a registered action, rather
+ * than guessing a fix.
  */
 export function diagnoseFallback(logText: string, targetOS: RepairDiagnosis["targetOS"]): RepairDiagnosis {
   const looksLikePortConflict = PORT_IN_USE_PATTERNS.some((pattern) => pattern.test(logText));
@@ -102,6 +133,20 @@ export function diagnoseFallback(logText: string, targetOS: RepairDiagnosis["tar
       checkPlan: [`Check whether a process is listening on port ${port}`],
       fixPlan: [{ actionId: "free-tcp-port", parameters: { port } }],
       preconditions: ["A disposable test environment with a reproducible port conflict"],
+      riskLevel: "low",
+      needsHumanApproval: true,
+    };
+  }
+
+  const pidFilePath = extractTmpPidFilePath(logText);
+  if (pidFilePath !== null) {
+    return {
+      issueTitle: `Stale PID file at ${pidFilePath}`,
+      rootCause: "A leftover PID/lock file from a previous, no-longer-running process is blocking startup",
+      targetOS,
+      checkPlan: [`Check whether the PID recorded in ${pidFilePath} belongs to a still-running process`],
+      fixPlan: [{ actionId: "clear-stale-pidfile", parameters: { pidFilePath } }],
+      preconditions: ["A disposable test environment with a reproducible stale pidfile"],
       riskLevel: "low",
       needsHumanApproval: true,
     };

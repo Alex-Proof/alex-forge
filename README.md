@@ -10,7 +10,8 @@ check actually ran.
 policy engine (`src/core/policy/`), a real Docker-backed sandbox runner (`src/core/verification/`),
 and the first repair mode (`src/modes/repair/`):
 
-- a registered, schema-validated action allowlist (currently `free-tcp-port`) -- a diagnosis can
+- a registered, schema-validated action allowlist (currently `free-tcp-port` and
+  `clear-stale-pidfile`) -- a diagnosis can
   never introduce a new capability just by naming an unregistered `actionId`
 - a deterministic, offline diagnosis fallback that recognizes a TCP-port-in-use log pattern and
   otherwise honestly reports "no registered action matches" instead of guessing
@@ -172,6 +173,40 @@ and the first repair mode (`src/modes/repair/`):
   the port-conflict pattern, and a colon-based match is only trusted when it is anchored to an
   actual listen-address form (`0.0.0.0`/`127.0.0.1`/`localhost`/a bare `::`/`:::`), never a bare
   colon-digit pair alone. Covered by new cases in `src/modes/repair/diagnose.test.ts`.
+- **Follow-up robustness pass**, same area: also recognizes Node's real unbracketed IPv6-loopback
+  form (`::1:PORT`, confirmed against a real `net.Server` error, not assumed), Go's standard net
+  package message (`listen tcp :8080: bind: address already in use` -- a bare `:PORT` with no
+  address literal at all, trusted only when anchored right after a literal `tcp`/`udp`, which a
+  timestamp never contains), and Docker's port-mapping conflict phrasing (`port is already
+  allocated`, which never uses the word "in use" at all). All covered by new cases in
+  `src/modes/repair/diagnose.test.ts`.
+
+- **A second registered action: `clear-stale-pidfile`.** Recognizes PostgreSQL's real `lock file
+  "..." already exists` wording and the generic daemon `PID file ... already exists` phrasing,
+  extracts the path, and only proceeds when it's an absolute `/tmp/<name>.pid` path -- `/tmp` is
+  the one directory guaranteed writable in Forge's own `--read-only` Docker sandbox (see
+  `sandbox.ts`'s `--tmpfs /tmp`), and the fixture has to create the fault at the *exact* path the
+  generated script checks for the red/green verification to mean anything. A path anywhere else
+  (the common real-world `/var/run/...`) is honestly left as `needs_review` rather than silently
+  rewritten to a different location than what the log said -- generalizing past `/tmp` would need
+  a less restrictive sandbox for this one action, a separate, bigger change to shared
+  infrastructure, not done here.
+  - The fix is **only ever** "remove the file", and only once an independent oracle has confirmed
+    the PID recorded inside it is not a live process (`tests/fixtures/stale-pidfile-oracle.py`,
+    Python's `os.kill(pid, 0)` idiom -- a different language and a different liveness check than
+    the generated script's own `kill -0` call). A pidfile whose PID *is* alive is never touched --
+    that may be a real second instance, which this action must never assume is safe to clear.
+  - The sandbox fixture reproduces the fault for real: spawns a trivial subshell, waits for it to
+    actually exit and be reaped, then writes that now-dead PID into the file -- never a fabricated
+    number that merely looks plausible.
+  - Only the `sh`/CLI format is wired up for this action so far (no `generateHtml`/
+    `generateExtensionProject` yet) -- the same incremental, format-by-format rollout
+    `free-tcp-port` itself went through; `--format html`/`extension` for this action is follow-up
+    work, not a gap introduced here.
+  - Proven end to end on real infrastructure (a real Docker container, a real reaped PID, a real
+    Python oracle process) by `src/modes/repair/fixture-stale-pidfile-catalog.test.ts`, including a
+    negative control that a pidfile holding a genuinely live PID is correctly left untouched
+    (`not_verified`, never a guessed pass).
 
 ### Usage
 
@@ -194,8 +229,11 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
 
 ### Known limitations (honest, as of this phase)
 
-- Exactly one fault type is recognized: a TCP port held by another process (`free-tcp-port`).
-  Everything else correctly falls through to `needs_review` rather than a guess.
+- Two fault types are recognized: a TCP port held by another process (`free-tcp-port`), and a
+  stale PID/lock file under `/tmp` blocking service startup (`clear-stale-pidfile`). Everything
+  else correctly falls through to `needs_review` rather than a guess. A stale-pidfile path
+  anywhere other than `/tmp` (the common real-world case) is also honestly left as
+  `needs_review` -- see the dedicated bullet below for why.
 - Only `--os linux` has a generated-script template; `windows`/`macos` are rejected with a clear
   error, not silently mis-generated.
 - Forge never installs the generated `.vsix` into the user's VS Code, and never will by design;

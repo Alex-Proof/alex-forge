@@ -46,12 +46,49 @@ describe("diagnoseFallback", () => {
     },
   );
 
+  it("extracts the port from Go's standard net package message form (bare ':PORT', no address literal, anchored on 'tcp')", () => {
+    const diagnosis = diagnoseFallback("listen tcp :8085: bind: address already in use", "linux");
+    expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 8085 } }]);
+  });
+
+  it("recognizes Docker's port-mapping conflict phrasing ('port is already allocated', no 'in use' wording at all)", () => {
+    const diagnosis = diagnoseFallback("Bind for 0.0.0.0:8086 failed: port is already allocated", "linux");
+    expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 8086 } }]);
+  });
+
   it("only extracts a port from the line(s) that actually matched the port-conflict pattern, not an unrelated line elsewhere in the same log", () => {
     const diagnosis = diagnoseFallback(
       "GET /status:9090 200 12ms\nError: listen EADDRINUSE: address already in use :::3000",
       "linux",
     );
     expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 3000 } }]);
+  });
+
+  it("recognizes PostgreSQL's real 'lock file already exists' phrasing for a /tmp pidfile", () => {
+    const diagnosis = diagnoseFallback('FATAL:  lock file "/tmp/postmaster.pid" already exists', "linux");
+    expect(diagnosis.fixPlan).toEqual([
+      { actionId: "clear-stale-pidfile", parameters: { pidFilePath: "/tmp/postmaster.pid" } },
+    ]);
+  });
+
+  it("recognizes a generic 'PID file already exists' phrasing for a /tmp pidfile", () => {
+    const diagnosis = diagnoseFallback(
+      "Error: PID file /tmp/myapp.pid already exists. Is the server already running?",
+      "linux",
+    );
+    expect(diagnosis.fixPlan).toEqual([
+      { actionId: "clear-stale-pidfile", parameters: { pidFilePath: "/tmp/myapp.pid" } },
+    ]);
+  });
+
+  it("honestly falls through to needs_review for a stale-pidfile message outside /tmp (never guesses a different location)", () => {
+    const diagnosis = diagnoseFallback("Error: PID file /var/run/myapp.pid already exists", "linux");
+    expect(diagnosis.fixPlan).toEqual([]);
+  });
+
+  it("honestly falls through to needs_review for a stale-pidfile message with only a bare filename (no path at all)", () => {
+    const diagnosis = diagnoseFallback('FATAL: lock file "postmaster.pid" already exists', "linux");
+    expect(diagnosis.fixPlan).toEqual([]);
   });
 
   it("honestly reports no action for an unrecognized log instead of guessing", () => {
@@ -108,6 +145,30 @@ describe("validateDiagnosis", () => {
     const result = validateDiagnosis({
       ...baseDiagnosis,
       fixPlan: [{ actionId: "free-tcp-port", parameters: { port: 999999 } }],
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("accepts a well-formed clear-stale-pidfile diagnosis", () => {
+    const result = validateDiagnosis({
+      ...baseDiagnosis,
+      fixPlan: [{ actionId: "clear-stale-pidfile", parameters: { pidFilePath: "/tmp/app.pid" } }],
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects a path-traversal attempt smuggled through clear-stale-pidfile's pidFilePath parameter", () => {
+    const result = validateDiagnosis({
+      ...baseDiagnosis,
+      fixPlan: [{ actionId: "clear-stale-pidfile", parameters: { pidFilePath: "/tmp/../etc/passwd" } }],
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects a clear-stale-pidfile path outside /tmp (even one that otherwise looks like a plausible pidfile)", () => {
+    const result = validateDiagnosis({
+      ...baseDiagnosis,
+      fixPlan: [{ actionId: "clear-stale-pidfile", parameters: { pidFilePath: "/var/run/app.pid" } }],
     });
     expect(result.ok).toBe(false);
   });

@@ -389,6 +389,164 @@ function buildFreeTcpPortFixture(rawParameters: unknown): ActionFixture {
   };
 }
 
+/**
+ * A second registered action: a stale PID/lock file blocking a service from starting (the
+ * PostgreSQL "lock file ... already exists" / generic daemon "PID file ... already exists"
+ * pattern). Deliberately scoped to paths under `/tmp` only -- this is the one directory
+ * guaranteed writable in Forge's own `--read-only` sandbox (see sandbox.ts's `--tmpfs /tmp`), and
+ * the fixture must create the fault at the *exact* path the generated script itself checks, or
+ * the red/green verification would not actually be testing that script's real behavior. A path
+ * under `/var/run` or elsewhere would need a less restrictive sandbox for this one action, which
+ * is a bigger, separate change to shared infrastructure -- so for now Forge honestly only handles
+ * the `/tmp/*.pid` case and otherwise falls through to `needs_review`, the same "narrow but
+ * correct over broad but guessed" choice free-tcp-port already makes for non-Linux targets.
+ *
+ * Unlike a TCP port (killing the actual holder), fixing this action never kills anything: the fix
+ * is **only** ever "remove the file", and only once the independent oracle below has confirmed
+ * the PID inside it is not a live process. A pidfile whose PID *is* alive means a real second
+ * instance might be running, which this action must never touch.
+ */
+
+export const ClearStalePidfileParametersSchema = z.object({
+  pidFilePath: z
+    .string()
+    .regex(/^\/tmp\/[A-Za-z0-9_-]+\.pid$/, "pidFilePath must be an absolute /tmp/<name>.pid path"),
+});
+
+export type ClearStalePidfileParameters = z.infer<typeof ClearStalePidfileParametersSchema>;
+
+function generateClearStalePidfileScript(rawParameters: unknown): string {
+  const { pidFilePath } = ClearStalePidfileParametersSchema.parse(rawParameters);
+
+  return `#!/bin/sh
+set -eu
+
+PID_FILE='${pidFilePath}'
+
+usage() {
+  echo "Usage: \$0 (--check|--dry-run|--fix|--verify) [--json]" >&2
+}
+
+mode=""
+json=0
+for arg in "$@"; do
+  case "$arg" in
+    --check|--dry-run|--fix|--verify)
+      if [ -n "$mode" ]; then
+        echo "error: only one of --check/--dry-run/--fix/--verify may be given at a time" >&2
+        exit 2
+      fi
+      mode="$arg"
+      ;;
+    --json)
+      json=1
+      ;;
+    *)
+      echo "error: unknown flag: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$mode" ]; then
+  usage
+  exit 2
+fi
+
+read_pid() {
+  cat "$PID_FILE" 2>/dev/null | tr -d '[:space:]' || true
+}
+
+# A fault exists only when the file is present AND its PID is confirmed dead. A pidfile with no
+# readable/numeric PID, or whose PID is alive, is never treated as a fault this action should
+# touch -- a live PID may mean a real second instance is genuinely running.
+is_stale() {
+  pid=$(read_pid)
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
+report() {
+  status="$1"
+  message="$2"
+  if [ "$json" = "1" ]; then
+    printf '{"status":"%s","pidFile":"%s","message":"%s"}\\n' "$status" "$PID_FILE" "$message"
+  else
+    printf '%s\\n' "$message"
+  fi
+}
+
+case "$mode" in
+  --check)
+    if [ ! -f "$PID_FILE" ]; then
+      report "ok" "no pid file at $PID_FILE"
+      exit 0
+    fi
+    if is_stale; then
+      report "fault_present" "stale pid file at $PID_FILE"
+      exit 1
+    else
+      report "ok" "pid file at $PID_FILE refers to a live process or is unreadable; nothing to fix"
+      exit 0
+    fi
+    ;;
+  --dry-run)
+    if [ -f "$PID_FILE" ] && is_stale; then
+      report "plan" "would remove stale pid file at $PID_FILE"
+    else
+      report "plan" "no action planned"
+    fi
+    exit 0
+    ;;
+  --fix)
+    if [ -f "$PID_FILE" ] && is_stale; then
+      rm -f "$PID_FILE"
+      if [ -f "$PID_FILE" ]; then
+        report "error" "failed to remove $PID_FILE"
+        exit 2
+      fi
+      report "fixed" "removed stale pid file at $PID_FILE"
+      exit 0
+    else
+      report "ok" "nothing to fix"
+      exit 0
+    fi
+    ;;
+  --verify)
+    if [ -f "$PID_FILE" ] && is_stale; then
+      report "still_blocked" "pid file at $PID_FILE is still stale"
+      exit 1
+    else
+      report "ok" "no stale pid file at $PID_FILE"
+      exit 0
+    fi
+    ;;
+esac
+`;
+}
+
+/**
+ * Deterministically creates a *genuinely* stale pidfile for the sandbox fixture: spawns a
+ * trivial subshell, waits for it to actually exit (so the PID is confirmed dead and reaped, not
+ * just guessed to be free), then writes that now-dead PID into the file -- a real reproduction of
+ * the fault, not a fabricated number that merely looks plausible.
+ */
+function buildClearStalePidfileFixture(rawParameters: unknown): ActionFixture {
+  const { pidFilePath } = ClearStalePidfileParametersSchema.parse(rawParameters);
+  return {
+    setupCommand: `sh -c 'exit 0' & DEADPID=$!; wait "$DEADPID"; echo "$DEADPID" > ${pidFilePath}`,
+    oracleCommand: `python3 stale-pidfile-oracle.py ${pidFilePath}`,
+    oracleAssetSourcePath: path.join(FIXTURES_DIR, "stale-pidfile-oracle.py"),
+    oracleAssetStagedName: "stale-pidfile-oracle.py",
+    sandboxImage: "python:3-alpine",
+  };
+}
+
 export const ACTION_REGISTRY: Readonly<Record<string, RegisteredAction>> = Object.freeze({
   "free-tcp-port": {
     actionId: "free-tcp-port",
@@ -397,6 +555,16 @@ export const ACTION_REGISTRY: Readonly<Record<string, RegisteredAction>> = Objec
     buildFixture: buildFreeTcpPortFixture,
     generateHtml: generateFreeTcpPortHtml,
     generateExtensionProject: generateFreeTcpPortExtensionProject,
+  },
+  "clear-stale-pidfile": {
+    actionId: "clear-stale-pidfile",
+    parametersSchema: ClearStalePidfileParametersSchema,
+    generateScript: generateClearStalePidfileScript,
+    buildFixture: buildClearStalePidfileFixture,
+    // No generateHtml/generateExtensionProject yet -- same incremental-by-format rollout
+    // free-tcp-port itself went through (CLI first, HTML/extension came later as their own
+    // phases). cli.ts's html/extension paths are also currently coupled to a numeric "port"
+    // parameter they don't have here; generalizing that is separate follow-up work.
   },
 });
 
