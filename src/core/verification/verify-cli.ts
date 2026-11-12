@@ -80,6 +80,33 @@ const ORACLE_STEP_NAMES = new Set(["precondition_oracle", "dry_run_oracle", "pos
 // see the red-team report for why that residual case is accepted rather than claimed fixed.)
 const ORACLE_ERROR_EXIT_CODES = new Set([2, 126, 127]);
 
+/**
+ * Both real oracles (tcp-port-oracle.mjs, stale-pidfile-oracle.py) print exactly one JSON object
+ * with an "oracle" field as their last line of output on every path, success or their own
+ * handled error. This closes the residual gap the exit-code checks above cannot: an interpreter
+ * that crashes for a reason *outside* the oracle's own error handling (e.g. a third-party import
+ * failing before any of the oracle's own code runs) often exits with a generic code like 1,
+ * which can coincidentally equal the oracle contract's own "1 = fault present" -- but it will
+ * never have printed this marker, since it never reached the oracle's own logic at all. Required
+ * on every oracle step regardless of exit code: a "correct-looking" exit code with no real
+ * verdict behind it is still refused.
+ */
+function hasOracleVerdictMarker(output: string): boolean {
+  const lines = output.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]!);
+      if (typeof parsed === "object" && parsed !== null && typeof parsed.oracle === "string") {
+        return true;
+      }
+    } catch {
+      // Not a JSON line (e.g. a stray log line or a crash's own stack trace) -- keep scanning
+      // backwards; the marker only has to appear somewhere in this step's output.
+    }
+  }
+  return false;
+}
+
 function toCheck(name: string, expectedExitCode: number, step: StepResult | undefined): VerificationCheck {
   if (!step) {
     return {
@@ -90,19 +117,36 @@ function toCheck(name: string, expectedExitCode: number, step: StepResult | unde
       details: { reason: "step did not complete (sandbox run ended early)" },
     };
   }
-  if (ORACLE_STEP_NAMES.has(name) && ORACLE_ERROR_EXIT_CODES.has(step.exitCode)) {
-    return {
-      name,
-      status: "not_verified",
-      exitCode: step.exitCode,
-      expectedExitCode,
-      details: {
-        reason: `the independent oracle did not produce a real state verdict (exit ${step.exitCode}: ${
-          step.exitCode === 2 ? "oracle-reported internal error" : "command not found/not executable"
-        }) -- this is never treated as pass or fail`,
-      },
-      stdoutExcerpt: step.output.slice(0, 2000),
-    };
+  if (ORACLE_STEP_NAMES.has(name)) {
+    if (ORACLE_ERROR_EXIT_CODES.has(step.exitCode)) {
+      return {
+        name,
+        status: "not_verified",
+        exitCode: step.exitCode,
+        expectedExitCode,
+        details: {
+          reason: `the independent oracle did not produce a real state verdict (exit ${step.exitCode}: ${
+            step.exitCode === 2 ? "oracle-reported internal error" : "command not found/not executable"
+          }) -- this is never treated as pass or fail`,
+        },
+        stdoutExcerpt: step.output.slice(0, 2000),
+      };
+    }
+    if (!hasOracleVerdictMarker(step.output)) {
+      return {
+        name,
+        status: "not_verified",
+        exitCode: step.exitCode,
+        expectedExitCode,
+        details: {
+          reason:
+            "the oracle's exit code looked valid but it never printed its own verdict marker -- " +
+            "its interpreter likely crashed before reaching the oracle's own logic at all, so this " +
+            "exit code is not trusted as a real state verdict",
+        },
+        stdoutExcerpt: step.output.slice(0, 2000),
+      };
+    }
   }
   const status: VerificationStatus = step.exitCode === expectedExitCode ? "passed" : "failed";
   return {

@@ -164,6 +164,17 @@ and the first repair mode (`src/modes/repair/`):
   destructive-command bypass (`base64 -d | sh`-style, no literal `rm -rf` substring anywhere) that
   passed the policy engine cleanly before the fix. This passes Phase 9's gate (`docs/ROADMAP.md`
   moves it from `locked` to `planned`); the AgentShield feature itself still has no design or code.
+  - **Follow-up: the report's one originally-open residual limitation is now closed too.** An
+    oracle's interpreter crashing *outside* its own error handling (e.g. a failing import) before
+    ever reaching its documented exit-code contract, with the interpreter's generic crash code
+    coincidentally colliding with "1 = fault present", used to only be caught by accident (the
+    overall run happened to resolve to `failed` rather than a false `passed`, for unrelated
+    reasons). Both real oracles already print one JSON object with an `"oracle"` field as their
+    last line of output on every path; `verify-cli.ts`'s `hasOracleVerdictMarker` now requires
+    this marker on every oracle step whenever the exit code isn't already a recognized error code
+    -- an exit code that merely *looks* valid is no longer trusted without it. Proven with a
+    direct regression test using a fake oracle that prints a fabricated crash message and exits
+    `1` with no real verdict at all; it now resolves to `not_verified`, not an accidental `failed`.
 
 - **Found while demonstrating `forge repair` on a realistic, timestamped log:** the deterministic
   fallback's port extraction (`extractPort`, `src/modes/repair/diagnose.ts`) used to scan the
@@ -309,11 +320,6 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
 - `forge validate`/`forge verify`/`forge evidence` as separate subcommands (blueprint section 12)
   are not implemented; everything they'd expose is already visible inside the exported ZIP's
   `evidence.json`.
-- The red/green oracle's exit-code-collision fix (see the self-test report) cannot catch *every*
-  way an oracle's interpreter could crash before reaching the oracle's own error handling --
-  e.g. a generic "module not found" crash from the oracle's chosen interpreter can still collide
-  with the oracle contract's own exit-code semantics. No observed scenario resolves to a false
-  `passed`, but this is not a principled guarantee the way the exit `2`/`126`/`127` handling is.
 - Category 2 of the red-team self-test (indirect injection via a tool's manifest/README) has no
   current attack surface to test against, honestly, because no code reads a tool's manifest or
   README yet -- that only exists once Phase 9's actual multi-tool input is built, at which point
