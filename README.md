@@ -1,10 +1,10 @@
 # Alex Forge
 
-Forge turns an error log into a checked repair artifact (CLI script and standalone HTML so far, a
-VS Code extension later) -- and refuses to call anything "verified" unless a real, independent
+Forge turns an error log into a checked repair artifact (CLI script, standalone HTML, and a VS
+Code extension companion) -- and refuses to call anything "verified" unless a real, independent
 check actually ran.
 
-## Status: Phase 7 -- standalone HTML repair artifacts
+## Status: Phase 8 -- VS Code extension artifacts
 
 **Implemented:** repository scaffold, TypeScript/CI setup, the type contracts (`src/types/`), the
 policy engine (`src/core/policy/`), a real Docker-backed sandbox runner (`src/core/verification/`),
@@ -94,6 +94,55 @@ and the first repair mode (`src/modes/repair/`):
   `tests/integration/forge-repair-html.test.ts` drives this end to end through the real `main()`
   entry point: log in, `repair.html` out inside a real ZIP, `forge catalog list` shows the entry.
 
+- `generateExtensionArtifact` (`src/modes/repair/diagnose.ts`) + `action.generateExtensionProject`
+  (`src/modes/repair/actions.ts`): a one-off, throwaway VS Code extension companion project for a
+  single diagnosed repair case. It carries no repair logic of its own -- it embeds the same
+  already-verified `repair.sh` as a string literal (same discipline as the HTML report) and offers
+  exactly two commands: "Forge Repair: Show details" (a read-only webview, `enableScripts: false`,
+  rendered via manual HTML-escaping) and "Forge Repair: Prepare terminal command" (after an
+  explicit modal confirmation, types -- but never submits -- `sh repair.sh <flag>` into an
+  integrated terminal via `terminal.sendText(cmd, false)`; the user still has to press Enter
+  themselves). No runtime dependencies, no eager activation, no contributions beyond those two
+  commands, and no automatic installation or repair run, ever.
+- `validateExtensionManifest` (`src/formats/extension.ts`): manifest and dependency policy --
+  requires `engines.vscode`/`main`/`publisher`, forbids an npm `scripts` field, forbids any runtime
+  `dependencies`, requires every `activationEvents` entry to be `onCommand:*` (no eager/`*`
+  activation), and allows no `contributes` point other than `commands`.
+- `verifyExtensionArtifact` (`src/core/verification/verify-extension.ts`): real, no-mock
+  verification in three gated steps -- (1) the manifest policy above against the generated source,
+  (2) a real `@vscode/vsce` packaging run producing an actual `.vsix`, with the *packaged*
+  manifest re-extracted and re-validated (closing the gap between what was generated and what was
+  actually shipped), and (3) wherever this environment allows it, a real VS Code Extension Host
+  launched via `@vscode/test-electron` under Xvfb, which activates the packaged extension and
+  concretely checks that `forgeRepair.showDetails` is registered and that invoking it opens a
+  webview tab (`tests/fixtures/vscode-extension-smoke-test.cjs`/`-runner.mjs`, independent of the
+  generator's own source). On success this reaches `L2_sandbox_executed`, matching HTML's
+  precedent of "a real sandboxed process actually ran the artifact". If a real launch isn't
+  possible here (no Xvfb, or no network path to VS Code's download host), that check is honestly
+  `skipped` -- never silently counted as passed -- and the overall level is capped at
+  `L1_static_validated`, which `independentlyVerify` already refuses to admit to the catalog. No
+  blanket "verified" claim is ever made for this format; the evidence text names exactly what ran
+  ("compiled and packaged", "started in a real VS Code Extension Host instance", or the specific
+  tested function), per blueprint section 21.4.
+- The policy engine gained a real capability it was missing: `inspectFiles` at the `"package"`
+  stage now recognizes an actual zip archive (checked by magic bytes, then genuinely parsed) and
+  inspects every entry on its own terms -- path safety, then the same text/secret/injection policy
+  as any other package file -- instead of hard-blocking the whole archive as unsupported binary
+  content. This only changes behavior for the `"package"` stage; `input`/`diagnosis`/
+  `generated-code` still reject binary content exactly as before (`src/core/policy/policy.ts`,
+  covered by new tests in `src/core/policy/policy.test.ts`).
+- `src/modes/repair/fixture-extension-catalog.test.ts`: the same diagnose -> generate -> verify ->
+  evidence -> export -> read back -> independently re-verify -> catalog-admit chain proven for
+  CLI/HTML, now for the extension format, plus a negative-control test that a manifest violating
+  the dependency policy is refused.
+- **This phase's own feasibility check, documented honestly:** `@vscode/vsce` only needs the npm
+  registry. `@vscode/test-electron` needs two additional hosts (`update.code.visualstudio.com`,
+  which then redirects to `vscode.download.prss.microsoft.com`) to download VS Code, plus
+  `xvfb-run`/`Xvfb` for a display server -- both confirmed working in this project's own dev
+  environment and added to CI (`.github/workflows/ci.yml` installs `xvfb` and caches
+  `.vscode-test/`). In a network environment that doesn't allow those two hosts, the runtime check
+  degrades to `skipped` as described above rather than failing outright or lying about what ran.
+
 ### Usage
 
 ```bash
@@ -117,7 +166,20 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
   Everything else correctly falls through to `needs_review` rather than a guess.
 - Only `--os linux` has a generated-script template; `windows`/`macos` are rejected with a clear
   error, not silently mis-generated.
-- The VS Code extension format (Phase 8) is not started.
+- `forge repair` itself still only ever produces the `sh`/`html` formats via `--format`;
+  `generateExtensionArtifact` and `verifyExtensionArtifact` are complete, tested library code
+  (including the full evidence/export/catalog chain), but there is no `--format extension` CLI
+  flag yet -- the same gap `--format html` had before it was wired in.
+- Forge never installs the generated `.vsix` into the user's VS Code, and never will by design;
+  installing and running it is always the user's own, separate, explicit action.
+- The extension companion's "show details"/"prepare terminal command" contract is currently only
+  implemented for `free-tcp-port`; a future second action needs its own
+  `generateExtensionProject`, same as it would need its own `generateHtml`.
+- A real VS Code Extension Host runtime check needs `xvfb-run`/`Xvfb` and network access to
+  `update.code.visualstudio.com` and `vscode.download.prss.microsoft.com`. Where either is
+  missing, Forge honestly reports that check as `skipped` (capped at `L1_static_validated`, which
+  `independentlyVerify` refuses to admit to the catalog) rather than claiming a runtime
+  verification that didn't happen.
 - No LLM provider is wired in yet -- only the deterministic fallback. `validateDiagnosis` is
   already the intended gate for a future model response, so adding a provider later doesn't
   change the trust boundary.
@@ -162,10 +224,15 @@ npm run lint   # tsc --noEmit
 npm test       # vitest run
 ```
 
-`npm test` needs a reachable Docker daemon (CLI sandbox tests) and a working Playwright/Chromium
-install (HTML artifact tests) -- both run real containers/browsers rather than a mock, per this
-project's "no fake verification" rule. CI runs `npx playwright install --with-deps chromium`
-before the test step.
+`npm test` needs a reachable Docker daemon (CLI sandbox tests), a working Playwright/Chromium
+install (HTML artifact tests), and -- for the extension artifact's full runtime check --
+`xvfb-run`/`Xvfb` plus network access to `update.code.visualstudio.com` and
+`vscode.download.prss.microsoft.com` (the first run downloads and caches a real VS Code build
+under `.vscode-test/`). All three run real containers/browsers/editor instances rather than a
+mock, per this project's "no fake verification" rule; where the extension runtime check's
+prerequisites aren't met, it degrades to an honestly-reported `skipped` check instead of failing
+the whole suite (see "Known limitations" above). CI runs `npx playwright install --with-deps
+chromium` and installs `xvfb` before the test step, and caches `.vscode-test/` across runs.
 
 ## License
 

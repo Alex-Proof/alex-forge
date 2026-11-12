@@ -1,5 +1,5 @@
 import type { RepairDiagnosis } from "../../types/diagnosis.js";
-import { getRegisteredAction } from "./actions.js";
+import { getRegisteredAction, type ExtensionProjectFiles } from "./actions.js";
 import { RepairDiagnosisSchema } from "./schema.js";
 
 export type DiagnosisValidationResult =
@@ -171,4 +171,43 @@ export function generateHtmlArtifact(diagnosis: RepairDiagnosis): GenerateHtmlAr
   }
 
   return { ok: true, fileName: "repair.html", content: action.generateHtml(step.parameters) };
+}
+
+export type GenerateExtensionArtifactResult =
+  | { ok: true; files: ExtensionProjectFiles }
+  | { ok: false; reason: string };
+
+/**
+ * Turns a validated diagnosis into a VS Code extension companion project (source files only --
+ * packaging and the real runtime check happen in src/core/verification/verify-extension.ts). Same
+ * validation discipline as generateCliArtifact/generateHtmlArtifact.
+ */
+export function generateExtensionArtifact(diagnosis: RepairDiagnosis): GenerateExtensionArtifactResult {
+  const validated = validateDiagnosis(diagnosis);
+  if (!validated.ok) {
+    return { ok: false, reason: validated.reason };
+  }
+  if (validated.diagnosis.fixPlan.length === 0) {
+    return { ok: false, reason: "diagnosis has no registered fix action; nothing to generate" };
+  }
+  if (validated.diagnosis.fixPlan.length > 1) {
+    return { ok: false, reason: "multi-action diagnoses are not supported by the current template catalog" };
+  }
+  if (validated.diagnosis.targetOS !== "linux") {
+    return { ok: false, reason: `no extension template exists yet for targetOS "${validated.diagnosis.targetOS}"` };
+  }
+
+  const step = validated.diagnosis.fixPlan[0];
+  if (!step) {
+    return { ok: false, reason: "diagnosis has no registered fix action; nothing to generate" };
+  }
+  const action = getRegisteredAction(step.actionId);
+  if (!action) {
+    return { ok: false, reason: `fixPlan references unregistered actionId: ${step.actionId}` };
+  }
+  if (!action.generateExtensionProject) {
+    return { ok: false, reason: `action "${step.actionId}" has no extension template yet` };
+  }
+
+  return { ok: true, files: action.generateExtensionProject(step.parameters) };
 }

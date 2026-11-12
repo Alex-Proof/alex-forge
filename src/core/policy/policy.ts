@@ -1,4 +1,5 @@
 import path from "node:path";
+import AdmZip from "adm-zip";
 import type { PolicyDecision, PolicyEngine, PolicyFinding, PolicyStage, Redaction } from "../../types/policy.js";
 import { COMMAND_RULES, FORBIDDEN_PATH_RULES, SECRET_PATTERNS } from "./rules.js";
 import { detectInjection } from "./injection.js";
@@ -75,6 +76,20 @@ function isAbsolutePath(rawPath: string): boolean {
     rawPath.startsWith("/") ||
     /^[A-Za-z]:[/\\]/.test(rawPath) ||
     rawPath.startsWith("\\\\")
+  );
+}
+
+// Local file header "PK\x03\x04", empty archive "PK\x05\x06", spanned archive "PK\x07\x08".
+// Deliberately narrow: only these three exact magic-byte signatures count as a zip archive here,
+// nothing else gets the package-stage unzip-and-inspect treatment below.
+function isZipArchive(content: Uint8Array): boolean {
+  if (content.length < 4 || content[0] !== 0x50 || content[1] !== 0x4b) {
+    return false;
+  }
+  return (
+    (content[2] === 0x03 && content[3] === 0x04) ||
+    (content[2] === 0x05 && content[3] === 0x06) ||
+    (content[2] === 0x07 && content[3] === 0x08)
   );
 }
 
@@ -208,6 +223,19 @@ export class ForgePolicyEngine implements PolicyEngine {
         findings.push(...pathDecision.findings);
 
         if (isLikelyBinary(file.content)) {
+          // Binary content is unsupported everywhere EXCEPT a real zip archive at the package
+          // stage (e.g. a packaged .vsix) -- and even there, it is never trusted as a single
+          // opaque blob. It is unzipped and every entry is inspected on its own terms (path
+          // safety, then the same text policy as any other package file); an entry that is
+          // itself binary is still blocked, just by entry rather than by archive.
+          if (stage === "package" && isZipArchive(file.content)) {
+            const zipDecision = this.inspectZipPackageContents(file.content, stage, file.path);
+            findings.push(...zipDecision.findings);
+            if (zipDecision.allowed) {
+              redactions.push(...zipDecision.redactions);
+            }
+            continue;
+          }
           findings.push({
             ruleId: "input-binary-content-unsupported",
             severity: "block",
@@ -227,6 +255,76 @@ export class ForgePolicyEngine implements PolicyEngine {
 
       return decide(findings, redactions);
     });
+  }
+
+  /**
+   * Unzips a package-stage archive (e.g. a packaged .vsix) and inspects every entry on its own
+   * terms rather than trusting the archive as an opaque, pre-approved blob. An archive this
+   * library itself cannot parse fails closed exactly like any other unsupported binary content.
+   */
+  private inspectZipPackageContents(content: Uint8Array, stage: PolicyStage, archivePath: string): PolicyDecision {
+    let zip: AdmZip;
+    try {
+      zip = new AdmZip(Buffer.from(content));
+    } catch (error) {
+      return decide(
+        [
+          {
+            ruleId: "package-zip-unreadable",
+            severity: "block",
+            message: `Package archive could not be read as a zip: ${error instanceof Error ? error.message : String(error)}`,
+            location: archivePath,
+          },
+        ],
+        [],
+      );
+    }
+
+    const findings: PolicyFinding[] = [];
+    const redactions: Redaction[] = [];
+    const entries = zip.getEntries().filter((entry) => !entry.isDirectory);
+    if (entries.length === 0) {
+      return decide(
+        [{ ruleId: "package-zip-empty", severity: "block", message: "Package archive has no entries", location: archivePath }],
+        [],
+      );
+    }
+
+    for (const entry of entries) {
+      const entryLocation = `${archivePath}:${entry.entryName}`;
+
+      const pathDecision = this.inspectPath(entry.entryName, stage);
+      findings.push(...pathDecision.findings.map((finding) => ({ ...finding, location: entryLocation })));
+
+      const entryData = new Uint8Array(entry.getData());
+      if (entryData.byteLength > MAX_FILE_BYTES) {
+        findings.push({
+          ruleId: "input-file-too-large",
+          severity: "block",
+          message: `Archive entry exceeds the maximum allowed size of ${MAX_FILE_BYTES} bytes`,
+          location: entryLocation,
+        });
+        continue;
+      }
+      if (isLikelyBinary(entryData)) {
+        findings.push({
+          ruleId: "input-binary-content-unsupported",
+          severity: "block",
+          message: "Binary content inside a package archive is not a supported input type",
+          location: entryLocation,
+        });
+        continue;
+      }
+
+      const entryText = new TextDecoder("utf-8").decode(entryData);
+      const textDecision = this.inspectText(entryText, stage);
+      findings.push(...textDecision.findings.map((finding) => ({ ...finding, location: entryLocation })));
+      if (textDecision.allowed) {
+        redactions.push(...textDecision.redactions);
+      }
+    }
+
+    return decide(findings, redactions);
   }
 }
 

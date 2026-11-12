@@ -233,6 +233,125 @@ run yourself, and lets you check whether a port number is valid input.</p>
 }
 
 /**
+ * A one-off, throwaway VS Code extension companion for this single diagnosed repair case
+ * (blueprint section 13, Phase 8). It never carries its own repair logic: it only displays the
+ * already-verified repair script (embedded exactly like the HTML report embeds it, as a string
+ * literal) and, on explicit per-command user confirmation, types a command into an integrated
+ * terminal -- it never executes anything itself. No runtime dependencies, no eager activation, no
+ * contributions beyond its two commands; see src/formats/extension.ts for the policy this must
+ * pass and src/core/verification/verify-extension.ts for how it's actually packaged and run.
+ */
+export type ExtensionProjectFiles = Readonly<Record<string, string>>;
+
+function escapeJsStringForTemplate(value: string): string {
+  return JSON.stringify(value);
+}
+
+function generateFreeTcpPortExtensionProject(rawParameters: unknown): ExtensionProjectFiles {
+  const { port } = FreeTcpPortParametersSchema.parse(rawParameters);
+  const scriptContent = generateFreeTcpPortScript(rawParameters);
+  const scriptContentJson = escapeJsStringForTemplate(scriptContent);
+  const scriptFileName = "repair.sh";
+  const panelTitle = `Forge Repair: free TCP port ${port}`;
+  const panelTitleJson = escapeJsStringForTemplate(panelTitle);
+  const scriptFileNameJson = escapeJsStringForTemplate(scriptFileName);
+
+  const packageJson = {
+    name: "forge-repair-free-tcp-port",
+    displayName: panelTitle,
+    description:
+      "Forge-generated repair companion for one diagnosed fault. Displays the already-verified repair script; never installs or runs anything automatically.",
+    version: "0.0.1",
+    publisher: "forge-local",
+    engines: { vscode: "^1.90.0" },
+    main: "./extension.js",
+    activationEvents: ["onCommand:forgeRepair.showDetails", "onCommand:forgeRepair.prepareTerminalCommand"],
+    contributes: {
+      commands: [
+        { command: "forgeRepair.showDetails", title: "Forge Repair: Show details" },
+        { command: "forgeRepair.prepareTerminalCommand", title: "Forge Repair: Prepare terminal command" },
+      ],
+    },
+  };
+
+  const extensionJs = `"use strict";
+const vscode = require("vscode");
+
+const SCRIPT_CONTENT = ${scriptContentJson};
+const SCRIPT_FILE_NAME = ${scriptFileNameJson};
+const PANEL_TITLE = ${panelTitleJson};
+
+// Rendered via a manually-escaped string, not innerHTML-from-untrusted-input -- and the webview
+// itself is created with enableScripts:false, so there is no script execution surface in it at
+// all regardless. This mirrors the HTML artifact generator's "never trust string interpolation
+// alone" discipline (src/modes/repair/actions.ts generateFreeTcpPortHtml).
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function activate(context) {
+  context.subscriptions.push(
+    vscode.commands.registerCommand("forgeRepair.showDetails", () => {
+      const panel = vscode.window.createWebviewPanel(
+        "forgeRepairDetails",
+        PANEL_TITLE,
+        vscode.ViewColumn.One,
+        { enableScripts: false }
+      );
+      panel.webview.html =
+        "<!doctype html><html><body>" +
+        "<h1>" + escapeHtml(PANEL_TITLE) + "</h1>" +
+        "<p>This panel only displays the already-verified script below. Forge never installs or " +
+        "runs anything on your system automatically -- not from this panel, and not from the " +
+        '"Prepare terminal command" command either (that only types a command into a terminal; ' +
+        "you still have to press Enter yourself).</p>" +
+        "<h2>" + escapeHtml(SCRIPT_FILE_NAME) + "</h2>" +
+        "<pre>" + escapeHtml(SCRIPT_CONTENT) + "</pre>" +
+        "</body></html>";
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("forgeRepair.prepareTerminalCommand", async () => {
+      const flag = await vscode.window.showQuickPick(["--check", "--dry-run", "--fix", "--verify"], {
+        placeHolder: "Which flag should be typed into the terminal?",
+      });
+      if (!flag) {
+        return;
+      }
+      const confirmed = await vscode.window.showWarningMessage(
+        'This will type "sh ' + SCRIPT_FILE_NAME + " " + flag + '" into a terminal. Nothing runs until you review it and press Enter yourself.',
+        { modal: true },
+        "Prepare command"
+      );
+      if (confirmed !== "Prepare command") {
+        return;
+      }
+      const terminal = vscode.window.createTerminal("Forge Repair");
+      terminal.show();
+      terminal.sendText("sh " + SCRIPT_FILE_NAME + " " + flag, false);
+    })
+  );
+}
+
+function deactivate() {}
+
+module.exports = { activate, deactivate };
+`;
+
+  return Object.freeze({
+    "package.json": `${JSON.stringify(packageJson, null, 2)}\n`,
+    "extension.js": extensionJs,
+    "README.md": `# ${panelTitle}\n\nGenerated by Forge. Run the command "Forge Repair: Show details" to see the already-verified\n${scriptFileName}. Run "Forge Repair: Prepare terminal command" to have Forge type a reviewed command\ninto a terminal for you -- it never runs anything by itself.\n`,
+  });
+}
+
+/**
  * Everything Forge's own verification needs to reproduce this action's fault in a disposable
  * sandbox and confirm the fix independently. This is never run against the user's real system --
  * it is Forge's synthetic reproduction of the fault type, used to prove the generated script's
@@ -255,6 +374,8 @@ export interface RegisteredAction {
   buildFixture: (rawParameters: unknown) => ActionFixture;
   /** Re-validates `rawParameters` itself. Optional: not every action has an HTML report yet. */
   generateHtml?: (rawParameters: unknown) => string;
+  /** Re-validates `rawParameters` itself. Optional: not every action has an extension project yet. */
+  generateExtensionProject?: (rawParameters: unknown) => ExtensionProjectFiles;
 }
 
 function buildFreeTcpPortFixture(rawParameters: unknown): ActionFixture {
@@ -275,6 +396,7 @@ export const ACTION_REGISTRY: Readonly<Record<string, RegisteredAction>> = Objec
     generateScript: generateFreeTcpPortScript,
     buildFixture: buildFreeTcpPortFixture,
     generateHtml: generateFreeTcpPortHtml,
+    generateExtensionProject: generateFreeTcpPortExtensionProject,
   },
 });
 

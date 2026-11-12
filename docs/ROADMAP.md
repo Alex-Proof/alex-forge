@@ -17,7 +17,7 @@ and covered by a passing test.
 | 6 | `forge repair` end to end, security regression suite in CI -- CLI MVP done | done |
 | -- | Distribution: thin Forge MCP server package, `alex-control-layer` tool entry | planned |
 | 7 | Standalone HTML artifacts | done |
-| 8 | VS Code extension artifacts | not started -- after phase 6 is stable |
+| 8 | VS Code extension artifacts | done |
 | 9 | Multi-tool hardening mode | locked -- requires a documented, passed red-team self-test first |
 
 ## What "done" means here

@@ -1,3 +1,4 @@
+import AdmZip from "adm-zip";
 import { describe, expect, it } from "vitest";
 import { ForgePolicyEngine, withFailClosed } from "./policy.js";
 
@@ -183,6 +184,58 @@ describe("ForgePolicyEngine.inspectFiles", () => {
     const big = new Uint8Array(5_000_001);
     const decision = engine.inspectFiles([{ path: "big.log", content: big }], "input");
     expect(decision.allowed).toBe(false);
+  });
+
+  // A packaged .vsix is a real zip archive, which is binary at the outer-blob level -- but
+  // the package stage must inspect it by unzipping and checking each entry, not by treating the
+  // whole archive as one opaque binary blob (blueprint 13 Phase 8: "Policy, Dependency- und
+  // Manifestprüfung" for the extension format).
+  describe("package-stage zip archives", () => {
+    function zipOf(entries: Record<string, string>): Uint8Array {
+      const zip = new AdmZip();
+      for (const [entryName, content] of Object.entries(entries)) {
+        zip.addFile(entryName, Buffer.from(content, "utf-8"));
+      }
+      return new Uint8Array(zip.toBuffer());
+    }
+
+    it("allows a real zip archive containing only harmless text entries", () => {
+      const zip = zipOf({ "extension/package.json": '{"name":"x"}', "extension/extension.js": "module.exports={};" });
+      const decision = engine.inspectFiles([{ path: "forge-repair.vsix", content: zip }], "package");
+      expect(decision.allowed).toBe(true);
+    });
+
+    it("blocks a zip entry whose name is a forbidden path (adm-zip itself strips '..' traversal on write, so this exercises the same inspectPath gate via a path FORBIDDEN_PATH_RULES catches instead)", () => {
+      const zip = zipOf({ ".ssh/authorized_keys": "ssh-ed25519 AAAA" });
+      const decision = engine.inspectFiles([{ path: "forge-repair.vsix", content: zip }], "package");
+      expect(decision.allowed).toBe(false);
+    });
+
+    it("blocks a zip entry whose text content contains a private key", () => {
+      const key = "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAKCAQ==\n-----END RSA PRIVATE KEY-----";
+      const zip = zipOf({ "extension/leaked.txt": key });
+      const decision = engine.inspectFiles([{ path: "forge-repair.vsix", content: zip }], "package");
+      expect(decision.allowed).toBe(false);
+    });
+
+    it("blocks a zip entry that is itself binary", () => {
+      const zip = new AdmZip();
+      zip.addFile("extension/payload.bin", Buffer.from([0, 1, 2, 3, 255, 254, 0, 10]));
+      const decision = engine.inspectFiles([{ path: "forge-repair.vsix", content: new Uint8Array(zip.toBuffer()) }], "package");
+      expect(decision.allowed).toBe(false);
+    });
+
+    it("blocks an archive that fails to parse as a zip even though it has zip-like magic bytes", () => {
+      const fakeZip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]);
+      const decision = engine.inspectFiles([{ path: "forge-repair.vsix", content: fakeZip }], "package");
+      expect(decision.allowed).toBe(false);
+    });
+
+    it("still blocks a real zip archive outside the package stage (no zip-aware carve-out for input/generated-code)", () => {
+      const zip = zipOf({ "extension/package.json": '{"name":"x"}' });
+      const decision = engine.inspectFiles([{ path: "upload.vsix", content: zip }], "input");
+      expect(decision.allowed).toBe(false);
+    });
   });
 });
 
