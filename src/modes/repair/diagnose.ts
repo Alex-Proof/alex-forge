@@ -39,6 +39,8 @@ const PORT_IN_USE_PATTERNS = [
   /EADDRINUSE/i,
   /address already in use/i,
   /port\s+(\d{1,5})\s+(?:is\s+)?(?:already\s+)?in\s+use/i,
+  // Docker's own phrasing (`docker run -p`/compose port-mapping conflicts) never says "in use".
+  /port\s+(?:is\s+)?already\s+allocated/i,
 ];
 
 function isValidPort(port: number): boolean {
@@ -59,6 +61,12 @@ function isValidPort(port: number): boolean {
  * address itself, so it still requires the following ":" + digits to be the actual port -- a
  * plain decimal timestamp never contains two consecutive colons, so it can never trigger this
  * branch by coincidence.
+ *
+ * A bare ":PORT" with no address literal at all is *also* trusted, but only when it is anchored
+ * right after a literal "tcp"/"tcp6"/"udp"/"udp6" -- Go's standard net package logs exactly this
+ * shape ("listen tcp :8080: bind: address already in use"), with no 0.0.0.0/127.0.0.1/::
+ * anywhere in the message. A timestamp never contains "tcp"/"udp", so this cannot collide with
+ * the same ambiguity the address-literal requirement above exists to rule out.
  */
 function extractPort(logText: string): number | null {
   const relevantLines = logText
@@ -67,10 +75,10 @@ function extractPort(logText: string): number | null {
   const scopedText = relevantLines.length > 0 ? relevantLines.join("\n") : logText;
 
   const addressPrefixedMatch = scopedText.match(
-    /(?:0\.0\.0\.0|127\.0\.0\.1|localhost|::[0-9a-fA-F]{0,4})\s*:\s*(\d{2,5})\b/i,
+    /(?:0\.0\.0\.0|127\.0\.0\.1|localhost|::[0-9a-fA-F]{0,4})\s*:\s*(\d{2,5})\b|(?:tcp6?|udp6?)\s*:\s*(\d{2,5})\b/i,
   );
-  if (addressPrefixedMatch?.[1]) {
-    const port = Number.parseInt(addressPrefixedMatch[1], 10);
+  if (addressPrefixedMatch) {
+    const port = Number.parseInt(addressPrefixedMatch[1] ?? addressPrefixedMatch[2] ?? "", 10);
     if (isValidPort(port)) {
       return port;
     }

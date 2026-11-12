@@ -46,6 +46,16 @@ describe("diagnoseFallback", () => {
     },
   );
 
+  it("extracts the port from Go's standard net package message form (bare ':PORT', no address literal, anchored on 'tcp')", () => {
+    const diagnosis = diagnoseFallback("listen tcp :8085: bind: address already in use", "linux");
+    expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 8085 } }]);
+  });
+
+  it("recognizes Docker's port-mapping conflict phrasing ('port is already allocated', no 'in use' wording at all)", () => {
+    const diagnosis = diagnoseFallback("Bind for 0.0.0.0:8086 failed: port is already allocated", "linux");
+    expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 8086 } }]);
+  });
+
   it("only extracts a port from the line(s) that actually matched the port-conflict pattern, not an unrelated line elsewhere in the same log", () => {
     const diagnosis = diagnoseFallback(
       "GET /status:9090 200 12ms\nError: listen EADDRINUSE: address already in use :::3000",

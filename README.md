@@ -172,6 +172,13 @@ and the first repair mode (`src/modes/repair/`):
   the port-conflict pattern, and a colon-based match is only trusted when it is anchored to an
   actual listen-address form (`0.0.0.0`/`127.0.0.1`/`localhost`/a bare `::`/`:::`), never a bare
   colon-digit pair alone. Covered by new cases in `src/modes/repair/diagnose.test.ts`.
+- **Follow-up robustness pass**, same area: also recognizes Node's real unbracketed IPv6-loopback
+  form (`::1:PORT`, confirmed against a real `net.Server` error, not assumed), Go's standard net
+  package message (`listen tcp :8080: bind: address already in use` -- a bare `:PORT` with no
+  address literal at all, trusted only when anchored right after a literal `tcp`/`udp`, which a
+  timestamp never contains), and Docker's port-mapping conflict phrasing (`port is already
+  allocated`, which never uses the word "in use" at all). All covered by new cases in
+  `src/modes/repair/diagnose.test.ts`.
 
 ### Usage
 
