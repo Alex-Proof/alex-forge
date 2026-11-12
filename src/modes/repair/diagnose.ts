@@ -51,8 +51,14 @@ function isValidPort(port: number): boolean {
  * timestamp like "2026-11-12T20:00:00Z" contains exactly that shape and would otherwise be
  * misread as a listen address (":00" from "20:00:00") before the regex ever reaches the real
  * "...in use :::3000" later in the same line. A real listen-address colon is only trusted when
- * it is anchored to one of the address forms Node/most runtimes actually log
- * (0.0.0.0/127.0.0.1/localhost/a bare "::"/"::::" IPv6-wildcard-plus-separator).
+ * it is anchored to one of the address forms Node/most runtimes actually log: `0.0.0.0`,
+ * `127.0.0.1`, `localhost`, or an IPv6 form built on a literal "::" (confirmed against Node's own
+ * real EADDRINUSE message text, not assumed) -- e.g. ":::3000" for the "any" address "::", or
+ * "::1:3000" for the loopback address "::1". The "::[0-9a-fA-F]{0,4}" branch covers both: it
+ * matches the literal "::" plus however many of the next (optional) hex characters belong to the
+ * address itself, so it still requires the following ":" + digits to be the actual port -- a
+ * plain decimal timestamp never contains two consecutive colons, so it can never trigger this
+ * branch by coincidence.
  */
 function extractPort(logText: string): number | null {
   const relevantLines = logText
@@ -60,7 +66,9 @@ function extractPort(logText: string): number | null {
     .filter((line) => PORT_IN_USE_PATTERNS.some((pattern) => pattern.test(line)));
   const scopedText = relevantLines.length > 0 ? relevantLines.join("\n") : logText;
 
-  const addressPrefixedMatch = scopedText.match(/(?:0\.0\.0\.0|127\.0\.0\.1|localhost|::|:::)\s*:\s*(\d{2,5})\b/i);
+  const addressPrefixedMatch = scopedText.match(
+    /(?:0\.0\.0\.0|127\.0\.0\.1|localhost|::[0-9a-fA-F]{0,4})\s*:\s*(\d{2,5})\b/i,
+  );
   if (addressPrefixedMatch?.[1]) {
     const port = Number.parseInt(addressPrefixedMatch[1], 10);
     if (isValidPort(port)) {

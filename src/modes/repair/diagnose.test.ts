@@ -38,6 +38,14 @@ describe("diagnoseFallback", () => {
     ).toEqual([{ actionId: "free-tcp-port", parameters: { port: 8083 } }]);
   });
 
+  it(
+    "extracts the port from Node's real IPv6-loopback EADDRINUSE message form (::1:PORT, unbracketed, confirmed against a real Node net.Server error)",
+    () => {
+      const diagnosis = diagnoseFallback("Error: listen EADDRINUSE: address already in use ::1:8084", "linux");
+      expect(diagnosis.fixPlan).toEqual([{ actionId: "free-tcp-port", parameters: { port: 8084 } }]);
+    },
+  );
+
   it("only extracts a port from the line(s) that actually matched the port-conflict pattern, not an unrelated line elsewhere in the same log", () => {
     const diagnosis = diagnoseFallback(
       "GET /status:9090 200 12ms\nError: listen EADDRINUSE: address already in use :::3000",
