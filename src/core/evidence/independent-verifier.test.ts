@@ -107,6 +107,79 @@ describe("independentlyVerify", () => {
     expect(result.evidence).toBeUndefined();
   });
 
+  it("accepts an L2_sandbox_executed result (e.g. HTML's browser functional test) when every recorded check passed", () => {
+    const evidence = buildEvidence({
+      artifactId: "forge-repair-html-test-001",
+      artifactFileName: "repair.html",
+      artifactFormat: "html",
+      artifactContent: new TextEncoder().encode("<!doctype html><html><body>ok</body></html>"),
+      sourceLogRedactedText: "service exited with code 1",
+      targetOS: "linux",
+      sandboxImage: "n/a",
+      verification: {
+        status: "passed",
+        level: "L2_sandbox_executed",
+        checks: [
+          { name: "static_html_policy", status: "passed", exitCode: null },
+          { name: "dom_xss_injection_does_not_execute", status: "passed", exitCode: null },
+        ],
+      },
+      forgeVersion: "0.0.1",
+      templateVersion: "1.0.0",
+    });
+    const result = independentlyVerify(
+      evidence,
+      new TextEncoder().encode("<!doctype html><html><body>ok</body></html>"),
+    );
+    expect(result.verified).toBe(true);
+  });
+
+  it("rejects an L2_sandbox_executed claim with no recorded checks at all", () => {
+    const evidence = buildEvidence({
+      artifactId: "forge-repair-html-test-002",
+      artifactFileName: "repair.html",
+      artifactFormat: "html",
+      artifactContent: new TextEncoder().encode("<!doctype html><html><body>ok</body></html>"),
+      sourceLogRedactedText: "service exited with code 1",
+      targetOS: "linux",
+      sandboxImage: "n/a",
+      verification: { status: "passed", level: "L2_sandbox_executed", checks: [] },
+      forgeVersion: "0.0.1",
+      templateVersion: "1.0.0",
+    });
+    const result = independentlyVerify(
+      evidence,
+      new TextEncoder().encode("<!doctype html><html><body>ok</body></html>"),
+    );
+    expect(result.verified).toBe(false);
+    expect(result.reasons.some((r) => r.includes("no checks were recorded"))).toBe(true);
+  });
+
+  it("rejects a verification level insufficient for catalog admission (e.g. only static validation)", () => {
+    const evidence = buildEvidence({
+      artifactId: "forge-repair-html-test-003",
+      artifactFileName: "repair.html",
+      artifactFormat: "html",
+      artifactContent: new TextEncoder().encode("<!doctype html><html><body>ok</body></html>"),
+      sourceLogRedactedText: "service exited with code 1",
+      targetOS: "linux",
+      sandboxImage: "n/a",
+      verification: {
+        status: "failed",
+        level: "L1_static_validated",
+        checks: [{ name: "static_html_policy", status: "passed", exitCode: null }],
+      },
+      forgeVersion: "0.0.1",
+      templateVersion: "1.0.0",
+    });
+    const result = independentlyVerify(
+      evidence,
+      new TextEncoder().encode("<!doctype html><html><body>ok</body></html>"),
+    );
+    expect(result.verified).toBe(false);
+    expect(result.reasons.some((r) => r.includes("not sufficient for catalog admission"))).toBe(true);
+  });
+
   it("recomputes the hash independently rather than importing the builder's hashing", () => {
     // Sanity cross-check: our own sha256 of the same bytes must equal what the verifier accepts.
     const expectedHash = createHash("sha256").update(artifactContent).digest("hex");

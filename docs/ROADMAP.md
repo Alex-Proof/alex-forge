@@ -16,7 +16,7 @@ and covered by a passing test.
 | 5 | Evidence builder + independently implemented second verifier (no shared code with the builder) | done |
 | 6 | `forge repair` end to end, security regression suite in CI -- CLI MVP done | done |
 | -- | Distribution: thin Forge MCP server package, `alex-control-layer` tool entry | planned |
-| 7 | Standalone HTML artifacts | not started -- after phase 6 is stable |
+| 7 | Standalone HTML artifacts | done |
 | 8 | VS Code extension artifacts | not started -- after phase 6 is stable |
 | 9 | Multi-tool hardening mode | locked -- requires a documented, passed red-team self-test first |
 

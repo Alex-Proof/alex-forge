@@ -16,7 +16,9 @@ export interface IndependentVerificationResult {
   evidence?: EvidencePackage;
 }
 
-const MANDATORY_CHECK_NAMES = [
+// The CLI red/green protocol's fixed step names (verify-cli.ts). Only evidence claiming
+// L3_state_transition_verified is held to this exact, named sequence.
+const CLI_RED_GREEN_CHECK_NAMES = [
   "precondition_oracle",
   "check_before_fix",
   "dry_run",
@@ -64,22 +66,38 @@ export function independentlyVerify(rawEvidence: unknown, artifactBytes: Uint8Ar
     reasons.push("policy findings include an unresolved block-severity finding");
   }
 
-  for (const name of MANDATORY_CHECK_NAMES) {
-    const check = evidence.verification.checks.find((c) => c.name === name);
-    if (!check) {
-      reasons.push(`missing mandatory verification check: ${name}`);
-      continue;
+  // What counts as "actually verified" depends on the format: a CLI artifact must have gone
+  // through the full named red/green protocol; a format with no OS-level state to verify (e.g.
+  // HTML, checked by a real headless-browser functional/CSP run) instead must show that
+  // everything that WAS checked actually passed, and that something was checked at all -- an
+  // empty checks array can never count as verified just because nothing in it failed.
+  if (evidence.verification.level === "L3_state_transition_verified") {
+    for (const name of CLI_RED_GREEN_CHECK_NAMES) {
+      const matchingCheck = evidence.verification.checks.find((c) => c.name === name);
+      if (!matchingCheck) {
+        reasons.push(`missing mandatory verification check: ${name}`);
+        continue;
+      }
+      if (matchingCheck.status !== "passed") {
+        reasons.push(`mandatory check "${name}" is not passed (status=${matchingCheck.status})`);
+      }
     }
-    if (check.status !== "passed") {
-      reasons.push(`mandatory check "${name}" is not passed (status=${check.status})`);
+  } else if (evidence.verification.level === "L2_sandbox_executed") {
+    if (evidence.verification.checks.length === 0) {
+      reasons.push("verification level claims L2_sandbox_executed but no checks were recorded");
     }
-  }
-
-  if (evidence.verification.level !== "L3_state_transition_verified") {
+    for (const recordedCheck of evidence.verification.checks) {
+      if (recordedCheck.status !== "passed") {
+        reasons.push(`check "${recordedCheck.name}" is not passed (status=${recordedCheck.status})`);
+      }
+    }
+  } else {
     reasons.push(
-      `verification level is "${evidence.verification.level}", expected "L3_state_transition_verified"`,
+      `verification level "${evidence.verification.level}" is not sufficient for catalog admission ` +
+        `(expected L2_sandbox_executed or L3_state_transition_verified)`,
     );
   }
+
   if (evidence.verification.status !== "passed") {
     reasons.push(`verification status is "${evidence.verification.status}", expected "passed"`);
   }

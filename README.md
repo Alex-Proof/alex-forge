@@ -1,10 +1,10 @@
 # Alex Forge
 
-Forge turns an error log into a checked repair artifact (CLI script first, HTML and a VS Code
-extension later) -- and refuses to call anything "verified" unless a real, independent check
-actually ran.
+Forge turns an error log into a checked repair artifact (CLI script and standalone HTML so far, a
+VS Code extension later) -- and refuses to call anything "verified" unless a real, independent
+check actually ran.
 
-## Status: Phase 6 -- CLI MVP complete (`forge repair`, log to ZIP)
+## Status: Phase 7 -- standalone HTML repair artifacts
 
 **Implemented:** repository scaffold, TypeScript/CI setup, the type contracts (`src/types/`), the
 policy engine (`src/core/policy/`), a real Docker-backed sandbox runner (`src/core/verification/`),
@@ -62,6 +62,27 @@ and the first repair mode (`src/modes/repair/`):
   security test categories (prompt injection, path traversal, secret leakage, dangerous shell
   patterns, output-policy bypass, resource exhaustion, forged evidence, catalog bypass), run in CI
   on every push alongside everything else.
+- `generateHtmlArtifact` (`src/modes/repair/diagnose.ts`) + `action.generateHtml`
+  (`src/modes/repair/actions.ts`): a self-contained, offline `repair.html` report. It cannot and
+  does not claim to free the port itself -- a browser has no OS-level access -- so it embeds the
+  same verified `repair.sh` as a download-only Blob and otherwise only runs real client-side port
+  validation logic, always rendered via `textContent` (never `innerHTML`). Its CSP allows only its
+  own two inline `<script>`/`<style>` blocks, by exact sha256 hash -- no `'unsafe-inline'`, no
+  external resources, `connect-src 'none'`.
+- `validateHtmlArtifact` (`src/formats/html.ts`): static checks for external references, inline
+  event handlers, `eval`, `innerHTML` assignment, and a CSP that is present and not weakened.
+- `verifyHtmlArtifact` (`src/core/verification/verify-html.ts`): real functional verification in
+  headless Chromium (the project's "no mocked sandbox" rule applies here too) -- confirms the
+  page renders correctly for a fixed input, that typing DOM-XSS payload markup into the port
+  field never executes and is never reflected as live markup, and that the CSP genuinely refuses
+  to run a freshly injected inline script and genuinely blocks an outbound `fetch`. On success
+  this reaches `L2_sandbox_executed` (a real sandboxed process actually ran the artifact); there
+  is no OS-level state to red/green-verify for this format, so it never claims `L3`.
+- The independent verifier (`src/core/evidence/independent-verifier.ts`) now accepts either the
+  CLI's named `L3_state_transition_verified` protocol or a generic `L2_sandbox_executed` result
+  (format-agnostic: every recorded check must have passed, and at least one must exist) --
+  HTML artifacts go through the exact same evidence-build, ZIP-export, independent-re-verify, and
+  catalog-admission chain as CLI artifacts, proven by a real end-to-end test.
 
 ### Usage
 
@@ -82,7 +103,10 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
   Everything else correctly falls through to `needs_review` rather than a guess.
 - Only `--os linux` has a generated-script template; `windows`/`macos` are rejected with a clear
   error, not silently mis-generated.
-- Only the CLI artifact format exists; HTML and the VS Code extension are Phase 7/8, not started.
+- The VS Code extension format (Phase 8) is not started.
+- `forge repair` itself still only ever produces the CLI script; `generateHtmlArtifact` and
+  `verifyHtmlArtifact` are complete, tested library code (including the full evidence/export/
+  catalog chain), but there is no `--format html` or equivalent CLI flag to invoke them yet.
 - No LLM provider is wired in yet -- only the deterministic fallback. `validateDiagnosis` is
   already the intended gate for a future model response, so adding a provider later doesn't
   change the trust boundary.
@@ -127,8 +151,10 @@ npm run lint   # tsc --noEmit
 npm test       # vitest run
 ```
 
-`npm test` now needs a reachable Docker daemon: the sandbox tests run real containers rather than
-a mock, per this project's "no fake verification" rule.
+`npm test` needs a reachable Docker daemon (CLI sandbox tests) and a working Playwright/Chromium
+install (HTML artifact tests) -- both run real containers/browsers rather than a mock, per this
+project's "no fake verification" rule. CI runs `npx playwright install --with-deps chromium`
+before the test step.
 
 ## License
 

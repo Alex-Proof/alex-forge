@@ -132,3 +132,43 @@ export function generateCliArtifact(diagnosis: RepairDiagnosis): GenerateCliArti
 
   return { ok: true, fileName: "repair.sh", content: action.generateScript(step.parameters) };
 }
+
+export type GenerateHtmlArtifactResult =
+  | { ok: true; fileName: string; content: string }
+  | { ok: false; reason: string };
+
+/**
+ * Turns a validated diagnosis into a standalone HTML report. Same validation discipline as
+ * generateCliArtifact: re-validates the diagnosis, refuses an empty or multi-action fixPlan, and
+ * refuses an action that has no HTML template rather than silently falling back to something
+ * else.
+ */
+export function generateHtmlArtifact(diagnosis: RepairDiagnosis): GenerateHtmlArtifactResult {
+  const validated = validateDiagnosis(diagnosis);
+  if (!validated.ok) {
+    return { ok: false, reason: validated.reason };
+  }
+  if (validated.diagnosis.fixPlan.length === 0) {
+    return { ok: false, reason: "diagnosis has no registered fix action; nothing to generate" };
+  }
+  if (validated.diagnosis.fixPlan.length > 1) {
+    return { ok: false, reason: "multi-action diagnoses are not supported by the current template catalog" };
+  }
+  if (validated.diagnosis.targetOS !== "linux") {
+    return { ok: false, reason: `no HTML template exists yet for targetOS "${validated.diagnosis.targetOS}"` };
+  }
+
+  const step = validated.diagnosis.fixPlan[0];
+  if (!step) {
+    return { ok: false, reason: "diagnosis has no registered fix action; nothing to generate" };
+  }
+  const action = getRegisteredAction(step.actionId);
+  if (!action) {
+    return { ok: false, reason: `fixPlan references unregistered actionId: ${step.actionId}` };
+  }
+  if (!action.generateHtml) {
+    return { ok: false, reason: `action "${step.actionId}" has no HTML template yet` };
+  }
+
+  return { ok: true, fileName: "repair.html", content: action.generateHtml(step.parameters) };
+}
