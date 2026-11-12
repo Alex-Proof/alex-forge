@@ -4,20 +4,26 @@ Forge turns an error log into a checked repair artifact (CLI script first, HTML 
 extension later) -- and refuses to call anything "verified" unless a real, independent check
 actually ran.
 
-## Status: Phase 2 -- process runner and Docker sandbox
+## Status: Phase 3 -- CLI contract, deterministic diagnosis, first fixture
 
-**Implemented:** repository scaffold, TypeScript project setup, CI (type-check + test), the type
-contracts for diagnosis/policy/verification/catalog (`src/types/`), the policy engine
-(`src/core/policy/`), and a real Docker-backed sandbox runner (`src/core/verification/`):
-network disabled, read-only root, CPU/memory/process-count limits, timeout and output-byte
-enforcement with guaranteed container and workspace cleanup, and a policy check on every command
-before it is ever spawned. A sandbox that fails to start always resolves to `runner_error`, never
-to anything that could be mistaken for a passing result. Covered by real Docker integration tests
-(no mocked sandbox).
+**Implemented:** repository scaffold, TypeScript/CI setup, the type contracts (`src/types/`), the
+policy engine (`src/core/policy/`), a real Docker-backed sandbox runner (`src/core/verification/`),
+and the first repair mode (`src/modes/repair/`):
 
-**Not implemented yet:** diagnosis fallback, CLI, red/green verification oracle, evidence builder,
-independent verifier, catalog. Nothing in this repository can currently generate or verify a
-repair artifact end to end. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the planned order.
+- a registered, schema-validated action allowlist (currently `free-tcp-port`) -- a diagnosis can
+  never introduce a new capability just by naming an unregistered `actionId`
+- a deterministic, offline diagnosis fallback that recognizes a TCP-port-in-use log pattern and
+  otherwise honestly reports "no registered action matches" instead of guessing
+- a CLI script generator implementing the five-flag contract (`--check`/`--dry-run`/`--fix`/
+  `--verify`/`--json`) with exit codes `0`/`1`/`2` per the documented semantics
+- a real, end-to-end fixture: the generated script is run against an actual held TCP port inside
+  the Phase 2 Docker sandbox, proving `--check` detects the fault, `--dry-run` reports a plan
+  without mutating anything (re-checked to confirm), `--fix` clears it, and `--verify` confirms it
+
+**Not implemented yet:** an *independent* state oracle (Phase 4 -- today's fixture checks state the
+same way the generated script does, which is not yet the required independent implementation),
+evidence builder, independent second verifier, catalog. Nothing in this repository can currently
+produce a catalog-eligible repair artifact end to end. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 No claim stronger than what actually ran in CI is made anywhere in this repository.
 

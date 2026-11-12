@@ -11,7 +11,7 @@ and covered by a passing test.
 | 0 | Repository scaffold, TS/test/CI setup, type contracts | done |
 | 1 | Policy engine (`inspectText`/`inspectPath`/`inspectCommand`/`inspectFiles`) + unit tests | done |
 | 2 | Process runner + Docker sandbox adapter (network disabled, resource limits, cleanup) | done |
-| 3 | CLI contract (`--check`/`--dry-run`/`--fix`/`--verify`/`--json`) + deterministic diagnosis fallback + one fixture | planned |
+| 3 | CLI contract (`--check`/`--dry-run`/`--fix`/`--verify`/`--json`) + deterministic diagnosis fallback + one fixture | done |
 | 4 | Red/green verification with an independent before/after oracle | planned |
 | 5 | Evidence builder + independently implemented second verifier (no shared code with the builder) | planned |
 | 6 | `forge repair` end to end, security regression suite in CI -- CLI MVP done | planned |
