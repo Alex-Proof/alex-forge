@@ -153,6 +153,17 @@ and the first repair mode (`src/modes/repair/`):
   `.vscode-test/`). In a network environment that doesn't allow those two hosts, the runtime check
   degrades to `skipped` as described above rather than failing outright or lying about what ran.
 
+- **Red-team self-test, Phase 9's gate ([`docs/red-team-self-test.md`](docs/red-team-self-test.md)):**
+  all 12 attack categories from `blueprint.md` section 15 against the protective layers built in
+  Phases 0-8, each backed by a real, currently-passing test -- not asserted from reading the code.
+  Running it for real surfaced and fixed three genuine gaps, each with its own new regression
+  test: a zip-slip path-traversal gap in the extension format's unpacking step
+  (`safelyUnpackVsixExtensionEntries`), an oracle exit-code collision that could let a
+  broken/missing oracle be mistaken for a confirmed fault precondition, and an obfuscated
+  destructive-command bypass (`base64 -d | sh`-style, no literal `rm -rf` substring anywhere) that
+  passed the policy engine cleanly before the fix. This passes Phase 9's gate (`docs/ROADMAP.md`
+  moves it from `locked` to `planned`); the AgentShield feature itself still has no design or code.
+
 ### Usage
 
 ```bash
@@ -198,6 +209,15 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
 - `forge validate`/`forge verify`/`forge evidence` as separate subcommands (blueprint section 12)
   are not implemented; everything they'd expose is already visible inside the exported ZIP's
   `evidence.json`.
+- The red/green oracle's exit-code-collision fix (see the self-test report) cannot catch *every*
+  way an oracle's interpreter could crash before reaching the oracle's own error handling --
+  e.g. a generic "module not found" crash from the oracle's chosen interpreter can still collide
+  with the oracle contract's own exit-code semantics. No observed scenario resolves to a false
+  `passed`, but this is not a principled guarantee the way the exit `2`/`126`/`127` handling is.
+- Category 2 of the red-team self-test (indirect injection via a tool's manifest/README) has no
+  current attack surface to test against, honestly, because no code reads a tool's manifest or
+  README yet -- that only exists once Phase 9's actual multi-tool input is built, at which point
+  it needs its own real test before being claimed covered.
 
 No claim stronger than what actually ran in CI is made anywhere in this repository.
 

@@ -165,6 +165,16 @@ export const INJECTION_PATTERNS: InjectionPattern[] = [
     severity: "warning",
     pattern: /(?:[A-Za-z0-9+/]{4}){20,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?/,
   },
+  {
+    // Text-scope counterpart to the "decode-and-execute" COMMAND_RULES entry below: catches the
+    // same obfuscated-destructive-command *shape* when it appears as a line of text (a source
+    // log, or generated script content reviewed via inspectText) rather than as a literal
+    // process invocation. Blueprint section 15, category 5.
+    ruleId: "dangerous-decode-and-execute-text",
+    message: "A known decode tool (base64/openssl/xxd/uudecode) piped into a shell interpreter was detected",
+    severity: "block",
+    pattern: /\b(base64\s+(-d|--decode)\b|openssl\s+enc\b[^|\n]*(-d\b|-decrypt\b)|xxd\s+-r\b|uudecode\b)[^\n]{0,80}\|\s*(sh|bash|zsh|powershell|pwsh)\b/i,
+  },
 ];
 
 export interface CommandRule {
@@ -251,6 +261,30 @@ export const COMMAND_RULES: CommandRule[] = [
       const hasDownloader = /\b(curl|wget|invoke-webrequest|iwr)\b/.test(joined);
       const hasPipeToInterpreter = /\|\s*(sh|bash|zsh|powershell|pwsh)\b/.test(joined);
       return hasDownloader && hasPipeToInterpreter;
+    },
+  },
+  {
+    // Catches the obfuscated-destructive-command pattern the blueprint's red-team self-test
+    // requires (section 15, category 5): the payload itself never appears as a literal
+    // "rm -rf"/"mkfs"/etc. substring -- it's hidden behind a decode step -- so none of the
+    // base/args string-matching rules above can see it. This only needs to recognize the
+    // *shape* (a known decoder piped into an interpreter), never decode the payload itself.
+    ruleId: "decode-and-execute",
+    message: "Shell invocation combining a decode tool (base64/openssl/xxd/etc.) with pipe-to-interpreter execution detected",
+    severity: "block",
+    matches: (base, args) => {
+      if (!["sh", "bash", "zsh", "powershell", "pwsh", "cmd", "cmd.exe"].includes(base)) {
+        return false;
+      }
+      const joined = args.join(" ").toLowerCase();
+      const hasDecoder =
+        /\bbase64\b[^|]*(-d\b|--decode\b)/.test(joined) ||
+        /\bopenssl\b[^|]*\benc\b[^|]*(-d\b|-decrypt\b)/.test(joined) ||
+        /\bxxd\b[^|]*-r\b/.test(joined) ||
+        /\b(python[0-9.]*|perl)\b[^|]*\b(b64decode|decode_base64|from_base64)\b/.test(joined) ||
+        /\buudecode\b/.test(joined);
+      const hasPipeToInterpreter = /\|\s*(sh|bash|zsh|powershell|pwsh)\b/.test(joined);
+      return hasDecoder && hasPipeToInterpreter;
     },
   },
   {

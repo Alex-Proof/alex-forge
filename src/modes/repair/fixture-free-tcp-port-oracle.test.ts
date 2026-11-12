@@ -96,6 +96,82 @@ describe("free-tcp-port red/green verification with an independent oracle", () =
   );
 
   it(
+    "red-team: an oracle command that was never even launched (unknown command, shell exit 127) resolves to not_verified, never a guessed pass (blueprint section 15, category 10)",
+    async () => {
+      const diagnosis = diagnoseFallback("Error: listen EADDRINUSE: address already in use :::3000", "linux");
+      const artifact = generateCliArtifact(diagnosis);
+      expect(artifact.ok).toBe(true);
+      if (!artifact.ok) {
+        return;
+      }
+
+      const sandbox = await createSandbox(sandboxOptions);
+      try {
+        // Real fault (held port) genuinely exists; only the oracle is broken, simulating a
+        // deployment bug (wrong binary name/typo) rather than a fault-reproduction problem.
+        await writeFile(path.join(sandbox.hostWorkDir, artifact.fileName), artifact.content, { mode: 0o755 });
+
+        const fixture: RedGreenFixture = {
+          setupCommand: `nc -l -p ${PORT} &`,
+          oracleCommand: `forge-oracle-binary-that-does-not-exist ${PORT}`,
+          cliCommand: (flag) => `sh ${artifact.fileName} ${flag}`,
+        };
+
+        const summary = await verifyRedGreen(sandbox, fixture);
+
+        // sh's own "command not found" is exit 127 -- never the oracle's documented "1 = fault
+        // present" contract, so this must never be silently treated as a confirmed precondition,
+        // and must never resolve to "passed".
+        expect(summary.status).toBe("not_verified");
+        const precondition = summary.checks.find((c) => c.name === "precondition_oracle");
+        expect(precondition?.status).toBe("not_verified");
+        expect(precondition?.exitCode).toBe(127);
+      } finally {
+        await sandbox.destroy();
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "red-team: an oracle that starts but signals its own internal error (its documented exit 2) resolves to not_verified, never conflated with pass/fail (blueprint section 15, category 10)",
+    async () => {
+      const diagnosis = diagnoseFallback("Error: listen EADDRINUSE: address already in use :::3000", "linux");
+      const artifact = generateCliArtifact(diagnosis);
+      expect(artifact.ok).toBe(true);
+      if (!artifact.ok) {
+        return;
+      }
+
+      const sandbox = await createSandbox(sandboxOptions);
+      try {
+        await stageOracle(sandbox.hostWorkDir);
+        await writeFile(path.join(sandbox.hostWorkDir, artifact.fileName), artifact.content, { mode: 0o755 });
+        // A self-contained "oracle" that starts fine but always reports its own documented
+        // internal-error exit code, regardless of real state -- distinct from both "0 = ok" and
+        // "1 = fault present".
+        await writeFile(path.join(sandbox.hostWorkDir, "broken-oracle.sh"), "#!/bin/sh\nexit 2\n", { mode: 0o755 });
+
+        const fixture: RedGreenFixture = {
+          setupCommand: `nc -l -p ${PORT} &`,
+          oracleCommand: "sh broken-oracle.sh",
+          cliCommand: (flag) => `sh ${artifact.fileName} ${flag}`,
+        };
+
+        const summary = await verifyRedGreen(sandbox, fixture);
+
+        expect(summary.status).toBe("not_verified");
+        const precondition = summary.checks.find((c) => c.name === "precondition_oracle");
+        expect(precondition?.status).toBe("not_verified");
+        expect(precondition?.exitCode).toBe(2);
+      } finally {
+        await sandbox.destroy();
+      }
+    },
+    30_000,
+  );
+
+  it(
     "negative control: catches a script that lies about having fixed the fault",
     async () => {
       // This script never kills the real holder process. It fakes success by writing a marker

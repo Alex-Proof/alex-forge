@@ -18,9 +18,16 @@ and covered by a passing test.
 | -- | Distribution: thin Forge MCP server package, `alex-control-layer` tool entry | planned |
 | 7 | Standalone HTML artifacts | done |
 | 8 | VS Code extension artifacts | done |
-| 9 | Multi-tool hardening mode | locked -- requires a documented, passed red-team self-test first |
+| 9 | Multi-tool hardening mode (AgentShield) | planned -- self-test gate passed ([`docs/red-team-self-test.md`](red-team-self-test.md)); the feature itself still needs its own design/scope before implementation starts |
 
 ## What "done" means here
 
 A phase is marked `done` only once its acceptance criteria from `blueprint.md` section 13 are met
 and demonstrated by a real test run in CI -- not by a status update in this table alone.
+
+Phase 9 specifically also required a documented, passed red-team self-test against the blueprint
+section 15 attack categories before it could even move off `locked` (section 9: "Erst nach
+dokumentiert bestandenem Red-Team-Selbsttest"). That gate is now passed -- see
+[`docs/red-team-self-test.md`](red-team-self-test.md), which also documents three real gaps the
+self-test found and fixed along the way. Phase 9 moving to `planned` means the *gate* is cleared,
+not that AgentShield has been designed or built yet.

@@ -64,6 +64,22 @@ function parseSteps(stdout: string, expectedNames: string[]): StepResult[] {
   return results;
 }
 
+// Oracle steps document their own exit-code contract (see RedGreenFixture.oracleCommand above):
+// 0 = target state holds, 1 = fault present, 2 = the oracle itself errored. Exit 2 is NOT a
+// pass/fail verdict about the system under test at all -- it means the oracle couldn't answer.
+// A naive exit-code-equality check has no way to tell "oracle confirmed the fault" (exit 1, by
+// its own contract) apart from "oracle crashed" (also commonly exit 1, e.g. Node's default
+// uncaught-exception code for a missing module) -- so a broken/missing oracle could silently
+// read as a confirmed precondition. toOracleCheck treats exit 2 as its own status, never folded
+// into "passed" or "failed" against whatever expectedExitCode happened to be.
+const ORACLE_STEP_NAMES = new Set(["precondition_oracle", "dry_run_oracle", "postcondition_oracle"]);
+// 2 = the oracle's own documented "I errored" signal. 126/127 are POSIX sh's own "found but not
+// executable" / "command not found" -- the oracle command never even started, which is an infra
+// problem, not a state verdict either. (A crash *inside* an interpreter that did start, e.g.
+// Node's generic exit 1 for an uncaught "module not found", cannot be distinguished this way --
+// see the red-team report for why that residual case is accepted rather than claimed fixed.)
+const ORACLE_ERROR_EXIT_CODES = new Set([2, 126, 127]);
+
 function toCheck(name: string, expectedExitCode: number, step: StepResult | undefined): VerificationCheck {
   if (!step) {
     return {
@@ -72,6 +88,20 @@ function toCheck(name: string, expectedExitCode: number, step: StepResult | unde
       exitCode: null,
       expectedExitCode,
       details: { reason: "step did not complete (sandbox run ended early)" },
+    };
+  }
+  if (ORACLE_STEP_NAMES.has(name) && ORACLE_ERROR_EXIT_CODES.has(step.exitCode)) {
+    return {
+      name,
+      status: "not_verified",
+      exitCode: step.exitCode,
+      expectedExitCode,
+      details: {
+        reason: `the independent oracle did not produce a real state verdict (exit ${step.exitCode}: ${
+          step.exitCode === 2 ? "oracle-reported internal error" : "command not found/not executable"
+        }) -- this is never treated as pass or fail`,
+      },
+      stdoutExcerpt: step.output.slice(0, 2000),
     };
   }
   const status: VerificationStatus = step.exitCode === expectedExitCode ? "passed" : "failed";
@@ -88,6 +118,14 @@ function finalize(checks: VerificationCheck[]): VerificationSummary {
   const allPassed = checks.every((c) => c.status === "passed");
   if (allPassed) {
     return { status: "passed", level: "L3_state_transition_verified", checks };
+  }
+
+  // Any oracle step reporting its own error (not_verified, see toCheck above) makes the entire
+  // run untrustworthy from that point on -- not just the specific step -- since every later
+  // check's expected exit code assumes the oracle can actually answer.
+  const brokenOracle = checks.find((c) => ORACLE_STEP_NAMES.has(c.name) && c.status === "not_verified");
+  if (brokenOracle) {
+    return { status: "not_verified", level: "none", checks };
   }
 
   const precondition = checks.find((c) => c.name === "precondition_oracle");

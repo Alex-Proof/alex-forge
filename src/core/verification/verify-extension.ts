@@ -30,6 +30,39 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export type UnpackResult = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Writes every "extension/..." entry of a packaged .vsix into `destDir` as a plain file,
+ * verified against path traversal before anything touches disk. This vsix is always Forge's own
+ * output (packaged by @vscode/vsce from a project this process just generated), so no entry name
+ * can currently contain ".." -- but a function that writes files from zip entry names must never
+ * trust them anyway, in case a future bug upstream of this point ever lets one through. Exported
+ * so a red-team regression test can exercise it directly against a hand-crafted malicious entry,
+ * without needing a real vsce packaging run to produce one.
+ *
+ * Also structurally immune to the classic "zip-slip via symlink" variant: this only ever calls
+ * `writeFile` with an entry's raw bytes, never `zip.extractAllTo()` or `fs.symlink`, so a zip
+ * entry flagged as a symlink is still written out as an ordinary file literally containing
+ * whatever bytes it carries (e.g. a symlink target string) -- never recreated as a real symlink.
+ */
+export async function safelyUnpackVsixExtensionEntries(zip: AdmZip, destDir: string): Promise<UnpackResult> {
+  const resolvedDestDir = path.resolve(destDir);
+  for (const entry of zip.getEntries()) {
+    if (!entry.entryName.startsWith("extension/") || entry.isDirectory) {
+      continue;
+    }
+    const relPath = entry.entryName.slice("extension/".length);
+    const destPath = path.resolve(resolvedDestDir, relPath);
+    if (destPath !== resolvedDestDir && !destPath.startsWith(`${resolvedDestDir}${path.sep}`)) {
+      return { ok: false, reason: `unsafe vsix entry name escapes the unpack directory: ${entry.entryName}` };
+    }
+    await mkdir(path.dirname(destPath), { recursive: true });
+    await writeFile(destPath, entry.getData());
+  }
+  return { ok: true };
+}
+
 export interface ExtensionVerificationResult {
   verification: VerificationSummary;
   /** The packaged .vsix bytes, present whenever packaging itself succeeded (even if later checks failed). */
@@ -113,14 +146,10 @@ export async function verifyExtensionArtifact(files: ExtensionProjectFiles): Pro
     const unpackedDir = await mkdtemp(path.join(tmpdir(), "forge-ext-unpacked-"));
     const userDataDir = await mkdtemp(path.join(tmpdir(), "forge-ext-userdata-"));
     try {
-      for (const entry of zip.getEntries()) {
-        if (!entry.entryName.startsWith("extension/") || entry.isDirectory) {
-          continue;
-        }
-        const relPath = entry.entryName.slice("extension/".length);
-        const destPath = path.join(unpackedDir, relPath);
-        await mkdir(path.dirname(destPath), { recursive: true });
-        await writeFile(destPath, entry.getData());
+      const unpackResult = await safelyUnpackVsixExtensionEntries(zip, unpackedDir);
+      if (!unpackResult.ok) {
+        checks.push(check("vsix_entry_path_safety", "failed", { reason: unpackResult.reason }));
+        return { verification: { status: "failed", level: "L1_static_validated", checks }, vsixBytes };
       }
 
       const runtimeCheck = await runRuntimeSmokeTest({
