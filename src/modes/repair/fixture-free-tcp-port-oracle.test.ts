@@ -172,6 +172,50 @@ describe("free-tcp-port red/green verification with an independent oracle", () =
   );
 
   it(
+    "red-team: an oracle that exits with a 'valid-looking' code but never printed any verdict is not trusted either (the residual gap the exit-code checks alone cannot close)",
+    async () => {
+      const diagnosis = diagnoseFallback("Error: listen EADDRINUSE: address already in use :::3000", "linux");
+      const artifact = generateCliArtifact(diagnosis);
+      expect(artifact.ok).toBe(true);
+      if (!artifact.ok) {
+        return;
+      }
+
+      const sandbox = await createSandbox(sandboxOptions);
+      try {
+        await stageOracle(sandbox.hostWorkDir);
+        await writeFile(path.join(sandbox.hostWorkDir, artifact.fileName), artifact.content, { mode: 0o755 });
+        // Simulates an interpreter that crashed for a reason entirely outside its own error
+        // handling (e.g. a third-party import failing) before ever reaching the oracle's own
+        // verdict-printing logic -- it happens to exit 1, which collides with the oracle
+        // contract's own "1 = fault present" and would have been silently trusted as a confirmed
+        // precondition before hasOracleVerdictMarker existed.
+        await writeFile(
+          path.join(sandbox.hostWorkDir, "crashed-oracle.sh"),
+          "#!/bin/sh\necho 'Traceback: ImportError: no module named fake_dependency' >&2\nexit 1\n",
+          { mode: 0o755 },
+        );
+
+        const fixture: RedGreenFixture = {
+          setupCommand: `nc -l -p ${PORT} &`,
+          oracleCommand: "sh crashed-oracle.sh",
+          cliCommand: (flag) => `sh ${artifact.fileName} ${flag}`,
+        };
+
+        const summary = await verifyRedGreen(sandbox, fixture);
+
+        expect(summary.status).toBe("not_verified");
+        const precondition = summary.checks.find((c) => c.name === "precondition_oracle");
+        expect(precondition?.status).toBe("not_verified");
+        expect(precondition?.exitCode).toBe(1);
+      } finally {
+        await sandbox.destroy();
+      }
+    },
+    30_000,
+  );
+
+  it(
     "negative control: catches a script that lies about having fixed the fault",
     async () => {
       // This script never kills the real holder process. It fakes success by writing a marker

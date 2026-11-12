@@ -254,22 +254,36 @@ document, with a regression test for each:
 
 ## Known residual limitations (honest, not claimed fixed)
 
-- **Interpreter-level oracle crash exit-code collision.** Fix #2 catches an oracle that never
-  launched (shell exit `126`/`127`) and an oracle that deliberately signals its own error (exit
-  `2`). It cannot catch every possible way an oracle's *chosen interpreter* could crash before
-  reaching the oracle's own error-handling code -- e.g. Node's generic exit code `1` for an
-  uncaught "module not found" error happens to collide with the oracle contract's own "exit 1 =
-  fault present" value. In the one scenario built to probe this (a `node <missing-file>.mjs`
-  oracle command), the overall result still never resolved to `passed` -- it resolved to `failed`,
-  because the later oracle calls' *different* expected exit codes caught the inconsistency -- but
-  this is accidental robustness, not a principled guarantee. Closing this fully would require every
-  oracle script to be wrapped in a harness that guarantees exit `0`/`1`/`2` even for its own
-  interpreter-level failures, which is future work, not something this fix claims to have done.
+- ~~Interpreter-level oracle crash exit-code collision~~ -- **closed**, see "Update" below.
 - **Category 2's tool-README sub-case has no current attack surface**, as noted above -- it needs
   a real test once Phase 9 actually reads tool manifests/READMEs, not before.
 - This self-test was run by one person in one sitting. The red-team test categories and their
   implementations have not had independent second-person review, which blueprint section 22.2
   recommends for security-critical changes generally.
+
+## Update: the interpreter-crash residual limitation is now closed
+
+The one gap this document originally left open -- an oracle's interpreter crashing for a reason
+*outside* its own error handling (e.g. a failing third-party import) before ever reaching the
+oracle's own exit-code contract, with the interpreter's generic crash code (commonly `1`)
+coincidentally colliding with "1 = fault present" -- is now closed, not just mitigated by
+accident.
+
+Both real oracles (`tcp-port-oracle.mjs`, `stale-pidfile-oracle.py`) already printed exactly one
+JSON object with an `"oracle"` field as their last line of output on every path, success or their
+own handled error. `src/core/verification/verify-cli.ts`'s `hasOracleVerdictMarker` now requires
+this marker on every oracle step whose exit code isn't already one of the recognized error codes
+(`2`/`126`/`127`) -- an exit code that merely *looks* valid (`0` or `1`) is no longer trusted on
+its own; the oracle must have actually printed a real verdict. An interpreter that crashes before
+reaching the oracle's own logic never prints this marker, so it can no longer be mistaken for "the
+oracle ran and confirmed the fault."
+
+Proven with a direct regression test
+(`src/modes/repair/fixture-free-tcp-port-oracle.test.ts`, "red-team: an oracle that exits with a
+'valid-looking' code but never printed any verdict is not trusted either") against a fake oracle
+that prints a fabricated import-error message and exits `1` with no verdict at all -- exactly the
+scenario this limitation described. It now resolves to `not_verified`, not the "accidentally
+correct, not principled" `failed` the original probe happened to produce.
 
 ## Verdict
 
