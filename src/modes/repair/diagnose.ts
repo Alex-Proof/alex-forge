@@ -41,18 +41,36 @@ const PORT_IN_USE_PATTERNS = [
   /port\s+(\d{1,5})\s+(?:is\s+)?(?:already\s+)?in\s+use/i,
 ];
 
+function isValidPort(port: number): boolean {
+  return port >= 1 && port <= 65535;
+}
+
+/**
+ * Extracts the port number from the specific line(s) that actually triggered the port-conflict
+ * match, never from the whole log blob. A bare ":NN" is not enough evidence on its own -- a
+ * timestamp like "2026-11-12T20:00:00Z" contains exactly that shape and would otherwise be
+ * misread as a listen address (":00" from "20:00:00") before the regex ever reaches the real
+ * "...in use :::3000" later in the same line. A real listen-address colon is only trusted when
+ * it is anchored to one of the address forms Node/most runtimes actually log
+ * (0.0.0.0/127.0.0.1/localhost/a bare "::"/"::::" IPv6-wildcard-plus-separator).
+ */
 function extractPort(logText: string): number | null {
-  const colonPortMatch = logText.match(/(?:0\.0\.0\.0|127\.0\.0\.1|::|:::|localhost)?:(\d{2,5})\b/);
-  if (colonPortMatch?.[1]) {
-    const port = Number.parseInt(colonPortMatch[1], 10);
-    if (port >= 1 && port <= 65535) {
+  const relevantLines = logText
+    .split("\n")
+    .filter((line) => PORT_IN_USE_PATTERNS.some((pattern) => pattern.test(line)));
+  const scopedText = relevantLines.length > 0 ? relevantLines.join("\n") : logText;
+
+  const addressPrefixedMatch = scopedText.match(/(?:0\.0\.0\.0|127\.0\.0\.1|localhost|::|:::)\s*:\s*(\d{2,5})\b/i);
+  if (addressPrefixedMatch?.[1]) {
+    const port = Number.parseInt(addressPrefixedMatch[1], 10);
+    if (isValidPort(port)) {
       return port;
     }
   }
-  const wordedMatch = logText.match(/port\s+(\d{1,5})/i);
+  const wordedMatch = scopedText.match(/port\s+(\d{1,5})/i);
   if (wordedMatch?.[1]) {
     const port = Number.parseInt(wordedMatch[1], 10);
-    if (port >= 1 && port <= 65535) {
+    if (isValidPort(port)) {
       return port;
     }
   }
