@@ -93,10 +93,33 @@ function extractPort(logText: string): number | null {
   return null;
 }
 
+// Covers both the generic daemon phrasing ("PID file ... already exists") and PostgreSQL's own
+// wording ("lock file ... already exists"). Deliberately requires an absolute-path-looking,
+// ".pid"-suffixed capture -- a bare filename alone ("postmaster.pid" with no directory) doesn't
+// tell Forge enough to safely act on, so that case honestly falls through to needs_review rather
+// than guessing a location, the same "never guess" discipline extractPort already follows.
+const STALE_PIDFILE_PATTERN = /\b(?:pid|lock)\s*file\s*["']?(\/[A-Za-z0-9_\-./]+\.pid)["']?\s*(?:already\s+)?exists/i;
+
 /**
- * Deterministic, offline diagnosis. No model call, no network access. Recognizes exactly one
- * fault pattern for now (a TCP port held by another process) and otherwise honestly reports that
- * it could not match a registered action, rather than guessing a fix.
+ * Only `/tmp/<name>.pid` is currently a registered, verifiable action (see
+ * ClearStalePidfileParametersSchema in actions.ts for why). A real absolute path mentioned
+ * anywhere else (e.g. the very common `/var/run/...`) is honestly reported as unmatched rather
+ * than silently rewritten to a different location than what the log actually said.
+ */
+function extractTmpPidFilePath(logText: string): string | null {
+  const match = STALE_PIDFILE_PATTERN.exec(logText);
+  const candidate = match?.[1];
+  if (candidate && /^\/tmp\/[A-Za-z0-9_-]+\.pid$/.test(candidate)) {
+    return candidate;
+  }
+  return null;
+}
+
+/**
+ * Deterministic, offline diagnosis. No model call, no network access. Recognizes two fault
+ * patterns (a TCP port held by another process, and a stale PID/lock file under /tmp blocking
+ * startup) and otherwise honestly reports that it could not match a registered action, rather
+ * than guessing a fix.
  */
 export function diagnoseFallback(logText: string, targetOS: RepairDiagnosis["targetOS"]): RepairDiagnosis {
   const looksLikePortConflict = PORT_IN_USE_PATTERNS.some((pattern) => pattern.test(logText));
@@ -110,6 +133,20 @@ export function diagnoseFallback(logText: string, targetOS: RepairDiagnosis["tar
       checkPlan: [`Check whether a process is listening on port ${port}`],
       fixPlan: [{ actionId: "free-tcp-port", parameters: { port } }],
       preconditions: ["A disposable test environment with a reproducible port conflict"],
+      riskLevel: "low",
+      needsHumanApproval: true,
+    };
+  }
+
+  const pidFilePath = extractTmpPidFilePath(logText);
+  if (pidFilePath !== null) {
+    return {
+      issueTitle: `Stale PID file at ${pidFilePath}`,
+      rootCause: "A leftover PID/lock file from a previous, no-longer-running process is blocking startup",
+      targetOS,
+      checkPlan: [`Check whether the PID recorded in ${pidFilePath} belongs to a still-running process`],
+      fixPlan: [{ actionId: "clear-stale-pidfile", parameters: { pidFilePath } }],
+      preconditions: ["A disposable test environment with a reproducible stale pidfile"],
       riskLevel: "low",
       needsHumanApproval: true,
     };
