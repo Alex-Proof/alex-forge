@@ -93,6 +93,16 @@ and the first repair mode (`src/modes/repair/`):
   exit-code semantics (`0` approved, `1` needs_review/rejected, `2` policy block or error).
   `tests/integration/forge-repair-html.test.ts` drives this end to end through the real `main()`
   entry point: log in, `repair.html` out inside a real ZIP, `forge catalog list` shows the entry.
+- `forge repair --format extension` (`src/cli.ts`): the same `--format` flag now also accepts
+  `extension`, calling `generateExtensionArtifact` + `verifyExtensionArtifact` -- again no Docker
+  sandbox; the real `@vscode/vsce` packaging step and (where this environment allows it) the real
+  VS Code Extension Host launch are this path's own verification. It joins the identical
+  evidence/export/independent-verify/catalog chain and exit-code semantics as `sh`/`html`. Because
+  catalog admission for this format genuinely depends on whether a real runtime launch succeeded
+  in the environment Forge is running in, `tests/integration/forge-repair-extension.test.ts`
+  asserts both honest outcomes: exit `0`/approved with a real, re-openable `.vsix` inside the ZIP
+  when a runtime launch succeeded, or exit `2` with "independent re-verification ... failed" and
+  no catalog record when it didn't -- never a silent pass either way.
 
 - `generateExtensionArtifact` (`src/modes/repair/diagnose.ts`) + `action.generateExtensionProject`
   (`src/modes/repair/actions.ts`): a one-off, throwaway VS Code extension companion project for a
@@ -148,13 +158,15 @@ and the first repair mode (`src/modes/repair/`):
 ```bash
 npm install
 npm run build
-node bin/forge.mjs repair --log ./error.log --os linux --output ./out [--format sh|html] [--json] [--catalog-dir ./.forge/catalog]
+node bin/forge.mjs repair --log ./error.log --os linux --output ./out [--format sh|html|extension] [--json] [--catalog-dir ./.forge/catalog]
 node bin/forge.mjs catalog list [--json] [--catalog-dir ./.forge/catalog]
 ```
 
 `--format` defaults to `sh` (a CLI script, verified in a real Docker sandbox). `--format html`
-produces a standalone `repair.html` report instead, verified in a real headless-Chromium process
--- no Docker required for that path.
+produces a standalone `repair.html` report instead, verified in a real headless-Chromium process.
+`--format extension` produces a `repair.vsix` VS Code extension companion instead, verified by a
+real `@vscode/vsce` packaging run and, where the environment allows it, a real VS Code Extension
+Host launch. Neither `html` nor `extension` needs Docker.
 
 Forge never installs or changes anything on your system by itself. `forge repair` only ever
 writes to `--output` (and the catalog directory); the generated script inside the resulting ZIP
@@ -166,10 +178,6 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
   Everything else correctly falls through to `needs_review` rather than a guess.
 - Only `--os linux` has a generated-script template; `windows`/`macos` are rejected with a clear
   error, not silently mis-generated.
-- `forge repair` itself still only ever produces the `sh`/`html` formats via `--format`;
-  `generateExtensionArtifact` and `verifyExtensionArtifact` are complete, tested library code
-  (including the full evidence/export/catalog chain), but there is no `--format extension` CLI
-  flag yet -- the same gap `--format html` had before it was wired in.
 - Forge never installs the generated `.vsix` into the user's VS Code, and never will by design;
   installing and running it is always the user's own, separate, explicit action.
 - The extension companion's "show details"/"prepare terminal command" contract is currently only
@@ -179,7 +187,9 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
   `update.code.visualstudio.com` and `vscode.download.prss.microsoft.com`. Where either is
   missing, Forge honestly reports that check as `skipped` (capped at `L1_static_validated`, which
   `independentlyVerify` refuses to admit to the catalog) rather than claiming a runtime
-  verification that didn't happen.
+  verification that didn't happen; through the CLI this surfaces as `forge repair --format
+  extension` exiting `2` with "independent re-verification ... failed" instead of a silent
+  `approved`.
 - No LLM provider is wired in yet -- only the deterministic fallback. `validateDiagnosis` is
   already the intended gate for a future model response, so adding a provider later doesn't
   change the trust boundary.
