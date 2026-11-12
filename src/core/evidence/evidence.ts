@@ -20,6 +20,10 @@ export interface BuildEvidenceInput {
   verification: VerificationSummary;
   forgeVersion: string;
   templateVersion: string;
+  /** Honest provenance: who actually proposed this diagnosis. Defaults to the mandatory
+   * deterministic fallback's own provenance -- never silently claim a model was involved. */
+  modelProvider?: string;
+  modelVersion?: string | null;
 }
 
 /**
@@ -74,8 +78,8 @@ export function buildEvidence(input: BuildEvidenceInput): EvidencePackage {
     provenance: {
       forgeVersion: input.forgeVersion,
       templateVersion: input.templateVersion,
-      modelProvider: "fallback-deterministic",
-      modelVersion: null,
+      modelProvider: input.modelProvider ?? "fallback-deterministic",
+      modelVersion: input.modelVersion ?? null,
     },
   };
 

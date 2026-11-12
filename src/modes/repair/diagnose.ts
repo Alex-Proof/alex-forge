@@ -1,6 +1,7 @@
 import type { RepairDiagnosis } from "../../types/diagnosis.js";
 import { getRegisteredAction, type ExtensionProjectFiles } from "./actions.js";
 import { RepairDiagnosisSchema } from "./schema.js";
+import type { DiagnosisProvider } from "../../core/diagnosis-provider/provider.js";
 
 export type DiagnosisValidationResult =
   | { ok: true; diagnosis: RepairDiagnosis }
@@ -162,6 +163,40 @@ export function diagnoseFallback(logText: string, targetOS: RepairDiagnosis["tar
     riskLevel: "high",
     needsHumanApproval: true,
   };
+}
+
+export const FALLBACK_PROVENANCE = { modelProvider: "fallback-deterministic", modelVersion: null } as const;
+
+export interface DiagnosisOutcome {
+  diagnosis: RepairDiagnosis;
+  modelProvider: string;
+  modelVersion: string | null;
+}
+
+/**
+ * The single place a model provider and the mandatory deterministic fallback meet (blueprint
+ * section 20: "Modell ist optional; Fallback ist verpflichtend"). A provider's response is never
+ * trusted more than the fallback's own output -- both are just an untrusted `candidate` object
+ * until `validateDiagnosis` says otherwise. Any missing/unconfigured provider, disabled model
+ * use, network failure, or a model response that fails validation all resolve the exact same
+ * way: the deterministic fallback runs and its result is returned, never a thrown error and
+ * never a partially-trusted guess.
+ */
+export async function proposeDiagnosis(input: {
+  redactedLogText: string;
+  targetOS: RepairDiagnosis["targetOS"];
+  provider?: DiagnosisProvider | null;
+}): Promise<DiagnosisOutcome> {
+  if (input.provider) {
+    const response = await input.provider.propose(input.redactedLogText, input.targetOS);
+    if (response) {
+      const validated = validateDiagnosis(response.candidate);
+      if (validated.ok) {
+        return { diagnosis: validated.diagnosis, modelProvider: input.provider.name, modelVersion: response.modelVersion };
+      }
+    }
+  }
+  return { diagnosis: diagnoseFallback(input.redactedLogText, input.targetOS), ...FALLBACK_PROVENANCE };
 }
 
 export type GenerateCliArtifactResult =

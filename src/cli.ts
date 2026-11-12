@@ -3,7 +3,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { policyEngine } from "./core/policy/policy.js";
 import { scanAndRedactSecrets } from "./core/policy/redact.js";
-import { diagnoseFallback, generateCliArtifact, generateHtmlArtifact, generateExtensionArtifact } from "./modes/repair/diagnose.js";
+import { proposeDiagnosis, generateCliArtifact, generateHtmlArtifact, generateExtensionArtifact } from "./modes/repair/diagnose.js";
+import { OpenAiDiagnosisProvider } from "./core/diagnosis-provider/openai-provider.js";
+import type { DiagnosisProvider } from "./core/diagnosis-provider/provider.js";
 import { getRegisteredAction } from "./modes/repair/actions.js";
 import { createSandbox } from "./core/verification/sandbox.js";
 import { verifyRedGreen } from "./core/verification/verify-cli.js";
@@ -45,6 +47,7 @@ interface RepairArgs {
   json: boolean;
   catalogDir: string;
   format: "sh" | "html" | "extension";
+  noModel: boolean;
 }
 
 function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
@@ -54,6 +57,7 @@ function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
   let catalogDir = path.join(process.cwd(), ".forge", "catalog");
   let json = false;
   let format: RepairArgs["format"] = "sh";
+  let noModel = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -86,6 +90,9 @@ function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
       case "--json":
         json = true;
         break;
+      case "--no-model":
+        noModel = true;
+        break;
       default:
         return { error: `unknown flag: ${arg}` };
     }
@@ -95,7 +102,7 @@ function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
   if (!os) return { error: "missing required flag: --os" };
   if (!outputDir) return { error: "missing required flag: --output" };
 
-  return { logPath, os, outputDir, json, catalogDir, format };
+  return { logPath, os, outputDir, json, catalogDir, format, noModel };
 }
 
 /**
@@ -110,7 +117,7 @@ async function runRepair(args: string[]): Promise<CliResult> {
   if ("error" in parsed) {
     return fail(2, `error: ${parsed.error}\n`);
   }
-  const { logPath, os, outputDir, json, catalogDir, format } = parsed;
+  const { logPath, os, outputDir, json, catalogDir, format, noModel } = parsed;
 
   let rawLogText: string;
   try {
@@ -128,7 +135,16 @@ async function runRepair(args: string[]): Promise<CliResult> {
   }
   const { redactedText } = scanAndRedactSecrets(rawLogText);
 
-  const diagnosis = diagnoseFallback(redactedText, os);
+  // The deterministic fallback is mandatory; a model provider is only ever an optional addition
+  // on top of it (blueprint section 20). --no-model forces the fallback outright; otherwise an
+  // OpenAI-backed provider is still only ever a candidate -- proposeDiagnosis silently falls
+  // back whenever OPENAI_API_KEY is unset, the request fails, or the response doesn't validate.
+  const provider: DiagnosisProvider | null = noModel ? null : new OpenAiDiagnosisProvider();
+  const { diagnosis, modelProvider, modelVersion } = await proposeDiagnosis({
+    redactedLogText: redactedText,
+    targetOS: os,
+    provider,
+  });
   if (diagnosis.fixPlan.length === 0) {
     return report(1, json, { status: "needs_review", diagnosis }, `no registered action matched this log: ${diagnosis.rootCause}\n`);
   }
@@ -230,6 +246,8 @@ async function runRepair(args: string[]): Promise<CliResult> {
     verification,
     forgeVersion: FORGE_VERSION,
     templateVersion: "1.0.0",
+    modelProvider,
+    modelVersion,
   });
 
   if (verification.status !== "passed") {
