@@ -5,17 +5,28 @@
   "license": "MIT",
   "description": "Forge -- generates and verifies repair artifacts (CLI scripts, later HTML/VSIX) from error logs. Real sandbox verification, independent second verifier, no self-attested evidence.",
   "type": "module",
+  "bin": {
+    "forge": "bin/forge.mjs"
+  },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
+    "build": "tsc",
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.1.0",
+    "playwright": "^1.63.0",
     "typescript": "~5.8.2",
     "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.1",
+    "zod": "^4.6.7"
   }
 }
