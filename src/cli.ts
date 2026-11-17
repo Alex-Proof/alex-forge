@@ -12,10 +12,12 @@ import { verifyRedGreen } from "./core/verification/verify-cli.js";
 import { verifyHtmlArtifact } from "./core/verification/verify-html.js";
 import { verifyExtensionArtifact } from "./core/verification/verify-extension.js";
 import type { VerificationSummary } from "./types/verification.js";
-import { buildEvidence } from "./core/evidence/evidence.js";
-import { exportRepairPackage, readArtifactAndEvidenceFromZip } from "./core/export/zip-exporter.js";
+import { buildEvidence, signEvidence } from "./core/evidence/evidence.js";
+import { attachRfc3161Timestamp } from "./core/evidence/rfc3161-timestamp.js";
+import { exportRepairPackage, readArtifactAndEvidenceFromZip, readPackageFromZip, type ReadBackResult } from "./core/export/zip-exporter.js";
 import { independentlyVerify } from "./core/evidence/independent-verifier.js";
 import { admitToCatalog } from "./core/catalog/catalog.js";
+import { loadOrCreateKeypair } from "./core/evidence/keystore.js";
 
 export const FORGE_VERSION = "0.0.1";
 
@@ -46,6 +48,7 @@ interface RepairArgs {
   outputDir: string;
   json: boolean;
   catalogDir: string;
+  keystoreDir: string;
   format: "sh" | "html" | "extension";
   noModel: boolean;
 }
@@ -55,6 +58,7 @@ function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
   let os: RepairArgs["os"] | undefined;
   let outputDir: string | undefined;
   let catalogDir = path.join(process.cwd(), ".forge", "catalog");
+  let keystoreDir = path.join(process.cwd(), ".forge", "keystore");
   let json = false;
   let format: RepairArgs["format"] = "sh";
   let noModel = false;
@@ -87,6 +91,9 @@ function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
       case "--catalog-dir":
         catalogDir = args[++i] ?? catalogDir;
         break;
+      case "--keystore-dir":
+        keystoreDir = args[++i] ?? keystoreDir;
+        break;
       case "--json":
         json = true;
         break;
@@ -102,7 +109,7 @@ function parseRepairArgs(args: string[]): RepairArgs | { error: string } {
   if (!os) return { error: "missing required flag: --os" };
   if (!outputDir) return { error: "missing required flag: --output" };
 
-  return { logPath, os, outputDir, json, catalogDir, format, noModel };
+  return { logPath, os, outputDir, json, catalogDir, keystoreDir, format, noModel };
 }
 
 /**
@@ -117,7 +124,7 @@ async function runRepair(args: string[]): Promise<CliResult> {
   if ("error" in parsed) {
     return fail(2, `error: ${parsed.error}\n`);
   }
-  const { logPath, os, outputDir, json, catalogDir, format, noModel } = parsed;
+  const { logPath, os, outputDir, json, catalogDir, keystoreDir, format, noModel } = parsed;
 
   let rawLogText: string;
   try {
@@ -235,7 +242,7 @@ async function runRepair(args: string[]): Promise<CliResult> {
   }
 
   const artifactId = `forge-repair-${step.actionId}-${randomUUID()}`;
-  const evidence = buildEvidence({
+  const unsignedEvidence = buildEvidence({
     artifactId,
     artifactFileName,
     artifactFormat: format === "sh" ? "cli" : format === "html" ? "html" : "extension",
@@ -249,6 +256,12 @@ async function runRepair(args: string[]): Promise<CliResult> {
     modelProvider,
     modelVersion,
   });
+  const keypair = loadOrCreateKeypair(keystoreDir);
+  const signedEvidence = signEvidence(unsignedEvidence, keypair);
+  // Best-effort, optional (rfc3161-timestamp.ts): attached AFTER signing, since the timestamp
+  // must bind to signature+content together. A TSA that is unreachable/times out/rejects the
+  // request leaves the evidence package unchanged -- never blocks or fails the repair pipeline.
+  const evidence = await attachRfc3161Timestamp(signedEvidence);
 
   if (verification.status !== "passed") {
     await mkdir(path.join(outputDir, "rejected"), { recursive: true });
@@ -279,7 +292,11 @@ async function runRepair(args: string[]): Promise<CliResult> {
   });
 
   const readBack = readArtifactAndEvidenceFromZip(zipPath, artifactFileName);
-  const reVerification = independentlyVerify(readBack.evidence, readBack.artifactBytes);
+  // The trusted public key comes from this run's own keystore, not from the ZIP just read back --
+  // checking a signature against a key pulled from inside the same file it signs would prove
+  // nothing. Publishing the key alongside the catalog is what lets a later, separate process
+  // (someone who did not just watch this build happen) re-check the same ZIP without it.
+  const reVerification = independentlyVerify(readBack.evidence, readBack.artifactBytes, keypair.publicKeyPem);
   if (!reVerification.verified) {
     return fail(
       2,
@@ -288,7 +305,13 @@ async function runRepair(args: string[]): Promise<CliResult> {
   }
 
   const evidenceBytes = new TextEncoder().encode(`${JSON.stringify(readBack.evidence, null, 2)}\n`);
-  const admission = admitToCatalog(readBack.evidence, readBack.artifactBytes, evidenceBytes, FORGE_VERSION);
+  const admission = admitToCatalog(
+    readBack.evidence,
+    readBack.artifactBytes,
+    evidenceBytes,
+    FORGE_VERSION,
+    keypair.publicKeyPem,
+  );
   if (!admission.admitted) {
     return fail(2, `error: catalog gate refused this package: ${admission.reasons.join("; ")}\n`);
   }
@@ -298,6 +321,7 @@ async function runRepair(args: string[]): Promise<CliResult> {
     path.join(catalogDir, `${artifactId}.catalog.json`),
     `${JSON.stringify(admission.artifact, null, 2)}\n`,
   );
+  await writeFile(path.join(catalogDir, "forge-trust-anchor.pub.pem"), keypair.publicKeyPem);
 
   const successReport = { status: "approved", zipPath, catalogArtifact: admission.artifact };
   return ok(
@@ -305,6 +329,76 @@ async function runRepair(args: string[]): Promise<CliResult> {
       ? `${JSON.stringify(successReport)}\n`
       : `approved: ${zipPath}\nartifactHash: ${admission.artifact.artifactHash}\n`,
   );
+}
+
+interface VerifyArgs {
+  zipPath: string;
+  publicKeyPath: string;
+  json: boolean;
+}
+
+function parseVerifyArgs(args: string[]): VerifyArgs | { error: string } {
+  let zipPath: string | undefined;
+  let publicKeyPath: string | undefined;
+  let json = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === undefined) continue;
+    if (arg === "--public-key") {
+      publicKeyPath = args[++i];
+    } else if (arg === "--json") {
+      json = true;
+    } else if (arg.startsWith("--")) {
+      return { error: `unknown flag: ${arg}` };
+    } else if (zipPath === undefined) {
+      zipPath = arg;
+    } else {
+      return { error: `unexpected extra argument: ${arg}` };
+    }
+  }
+
+  if (!zipPath) return { error: "missing required argument: <zip>" };
+  if (!publicKeyPath) return { error: "missing required flag: --public-key" };
+
+  return { zipPath, publicKeyPath, json };
+}
+
+/**
+ * `forge verify <zip> --public-key <pem>`: the counterpart to `forge repair`'s own self-check --
+ * this is the path a third party uses, with nothing but the published trust anchor and a
+ * downloaded ZIP, never a private key or Docker. Exit 0 only when independentlyVerify(...)
+ * confirms the signature and every other check against that exact public key; exit 1 naming the
+ * reasons otherwise.
+ */
+async function runVerify(args: string[]): Promise<CliResult> {
+  const parsed = parseVerifyArgs(args);
+  if ("error" in parsed) {
+    return fail(2, `error: ${parsed.error}\n`);
+  }
+  const { zipPath, publicKeyPath, json } = parsed;
+
+  let publicKeyPem: string;
+  try {
+    publicKeyPem = await readFile(publicKeyPath, "utf-8");
+  } catch (error) {
+    return fail(2, `error: could not read --public-key file: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+
+  let readBack: ReadBackResult;
+  try {
+    readBack = readPackageFromZip(zipPath);
+  } catch (error) {
+    return fail(2, `error: could not read package: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+
+  const result = independentlyVerify(readBack.evidence, readBack.artifactBytes, publicKeyPem);
+  if (!result.verified) {
+    return json
+      ? { exitCode: 1, stdout: `${JSON.stringify({ verified: false, reasons: result.reasons })}\n`, stderr: "" }
+      : fail(1, `verification failed:\n${result.reasons.map((reason) => `  - ${reason}`).join("\n")}\n`);
+  }
+  return json ? ok(`${JSON.stringify({ verified: true })}\n`) : ok(`verified: ${zipPath}\n`);
 }
 
 async function runCatalogList(args: string[], defaultCatalogDir: string): Promise<CliResult> {
@@ -349,6 +443,8 @@ export async function main(argv: string[]): Promise<CliResult> {
   switch (command) {
     case "repair":
       return runRepair(rest);
+    case "verify":
+      return runVerify(rest);
     case "catalog": {
       if (rest[0] === "list") {
         return runCatalogList(rest.slice(1), defaultCatalogDir);
@@ -356,7 +452,11 @@ export async function main(argv: string[]): Promise<CliResult> {
       return fail(2, `error: unknown catalog subcommand: ${rest[0] ?? "(none)"}\n`);
     }
     case undefined:
-      return fail(2, "error: missing command. Usage: forge repair --log <path> --os <linux|windows|macos> --output <dir>\n");
+      return fail(
+        2,
+        "error: missing command. Usage: forge repair --log <path> --os <linux|windows|macos> --output <dir>\n" +
+          "       forge verify <zip> --public-key <pem>\n",
+      );
     default:
       return fail(2, `error: unknown command: ${command}\n`);
   }

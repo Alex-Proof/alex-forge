@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { VerificationSummary } from "../../types/verification.js";
 import { policyEngine } from "../policy/policy.js";
 import { EVIDENCE_SCHEMA_VERSION, EvidenceSchema, type EvidencePackage } from "./schema.js";
+import { canonicalJson } from "./canonical-json.js";
+import { forgeKeyId, forgeSign, type ForgeKeypair } from "./keystore.js";
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -86,4 +88,19 @@ export function buildEvidence(input: BuildEvidenceInput): EvidencePackage {
   // Self-check against our own schema before handing this out: a builder that produces
   // schema-invalid evidence is a bug, and it must fail loudly here rather than downstream.
   return EvidenceSchema.parse(evidence);
+}
+
+/**
+ * Attaches `proof` by signing the canonical bytes of the evidence (everything except `proof`
+ * itself, which does not exist yet at signing time). Returns a new, re-validated object rather
+ * than mutating -- callers must use the return value.
+ */
+export function signEvidence(evidence: EvidencePackage, keypair: ForgeKeypair): EvidencePackage {
+  const { proof: _existingProof, ...unsigned } = evidence;
+  const digest = createHash("sha256").update(canonicalJson(unsigned)).digest();
+  const signed: EvidencePackage = {
+    ...unsigned,
+    proof: { keyId: forgeKeyId(keypair.publicKeyPem), signature: forgeSign(keypair.privateKeyPem, digest) },
+  };
+  return EvidenceSchema.parse(signed);
 }

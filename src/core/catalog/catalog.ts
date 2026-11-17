@@ -20,8 +20,9 @@ export function admitToCatalog(
   artifactBytes: Uint8Array,
   evidenceBytes: Uint8Array,
   forgeVersion: string,
+  trustedPublicKeyPem?: string,
 ): CatalogAdmissionResult {
-  const verification = independentlyVerify(rawEvidence, artifactBytes);
+  const verification = independentlyVerify(rawEvidence, artifactBytes, trustedPublicKeyPem);
   if (!verification.verified || !verification.evidence) {
     return { admitted: false, reasons: verification.reasons };
   }

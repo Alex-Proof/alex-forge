@@ -260,6 +260,41 @@ and the first repair mode (`src/modes/repair/`):
     the shipped provider code itself (plain `fetch`, no proxy-awareness, which is the correct,
     dependency-free behavior for a normal end user's own machine).
 
+- Ed25519 trust anchor for `evidence.json` (`src/core/evidence/keystore.ts` + `canonical-json.ts`):
+  `forge repair` loads or creates a local keypair under `--keystore-dir` (default
+  `.forge/keystore/`, gitignored) and `signEvidence()` signs the canonical bytes of every field
+  except `proof` itself. `independentlyVerify()` takes an optional `trustedPublicKeyPem` -- when
+  given, it requires a `proof` that actually verifies against that exact key, not an embedded one
+  from inside the file being checked (an embedded key would let a forger regenerate both a fresh
+  keypair and a matching signature). `forge repair` re-checks its own freshly exported ZIP against
+  its own run's public key before writing a catalog record, and publishes
+  `forge-trust-anchor.pub.pem` next to the catalog. Deliberately built independent of Panzer's own
+  `keystore.ts`/`canonicalJson.ts` -- a signer and verifier sharing code can both be blinded by the
+  same bug in it (see `docs/ASSUMPTIONS.md` A-001).
+- `forge verify <zip> --public-key <pem>` (`src/cli.ts`): the counterpart a *third party* uses --
+  nothing but a downloaded ZIP and the published trust-anchor PEM, never a private key or Docker.
+  Exit `0` only when `independentlyVerify()` confirms the signature (and everything else) against
+  that exact key; exit `1` naming the reasons otherwise. `readPackageFromZip`
+  (`src/core/export/zip-exporter.ts`) reads `evidence.json` first to find the artifact's file name,
+  since a third party never watched the package get built and so never knew it up front. Tested in
+  `src/cli.verify.test.ts`. This retires the "not implemented" limitation this file used to list
+  for `forge verify`.
+- Best-effort RFC3161 timestamp for `evidence.json` (`src/core/evidence/rfc3161-timestamp.ts`): an
+  adapted port of alex-core's own, already-hardened `adapters/mrtb/rfc3161Timestamp.server.ts`
+  (no live import -- alex-core isn't an npm package alex-forge could depend on; see
+  `docs/ASSUMPTIONS.md` A-002). Attached *after* `signEvidence()`, since the timestamp must bind to
+  signature+content together. Confirms, via a real public timestamping authority (FreeTSA) rather
+  than Forge's own claim, that this exact signed content existed by a given time. Strictly
+  additive and never blocking: a TSA that's unreachable, times out, or rejects the request leaves
+  `evidence.json` unchanged, and `forge repair` never fails because of it. When present,
+  `independentlyVerify()` checks both the hash binding (including the hash the token itself
+  cryptographically signs, closing a replay/forgery gap a self-declared-field-only check would
+  miss) and the CMS/PKCS7 signature chain against FreeTSA's pinned root CA; absence is never a
+  failure, so every pre-existing evidence package stays valid. Tested against a real, frozen
+  FreeTSA capture and, once per this change, against the live service itself (not just this
+  session's own mocks) -- see `src/core/evidence/rfc3161-timestamp.test.ts`. Not covered: TSA
+  rotation/multiple TSAs, OCSP/revocation checking (same honest scope as the alex-core original).
+
 ### Usage
 
 ```bash
@@ -267,6 +302,7 @@ npm install
 npm run build
 node bin/forge.mjs repair --log ./error.log --os linux --output ./out [--format sh|html|extension] [--json] [--catalog-dir ./.forge/catalog] [--no-model]
 node bin/forge.mjs catalog list [--json] [--catalog-dir ./.forge/catalog]
+node bin/forge.mjs verify ./out/<artifactId>.zip --public-key ./.forge/catalog/forge-trust-anchor.pub.pem [--json]
 ```
 
 `--format` defaults to `sh` (a CLI script, verified in a real Docker sandbox). `--format html`
@@ -317,9 +353,11 @@ is yours to review and run yourself with `--check` / `--dry-run` / `--fix` / `--
   fallback produced the diagnosis -- same generation code either way.
 - The catalog is a flat directory of JSON files, not a database -- adequate for this MVP, not for
   scale.
-- `forge validate`/`forge verify`/`forge evidence` as separate subcommands (blueprint section 12)
-  are not implemented; everything they'd expose is already visible inside the exported ZIP's
-  `evidence.json`.
+- `forge verify <zip> --public-key <pem>` is implemented (see above); `forge validate`/
+  `forge evidence` as separate subcommands (blueprint section 12) are not -- everything they'd
+  expose is already visible inside the exported ZIP's `evidence.json`.
+- RFC3161 rotation/multiple TSAs and OCSP/certificate-revocation checking are not implemented,
+  same honest scope as the alex-core module this was ported from.
 - Category 2 of the red-team self-test (indirect injection via a tool's manifest/README) has no
   current attack surface to test against, honestly, because no code reads a tool's manifest or
   README yet -- that only exists once Phase 9's actual multi-tool input is built, at which point

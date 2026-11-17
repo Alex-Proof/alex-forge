@@ -77,6 +77,29 @@ export const EvidenceSchema = z.object({
     modelProvider: z.string().min(1),
     modelVersion: z.string().nullable(),
   }),
+  /** Absent for evidence that was never signed (e.g. older records, or unit tests that build
+   * evidence directly without going through the CLI's signing step). Present whenever
+   * signEvidence() ran -- a consumer that was handed a trusted public key out of band can then
+   * require and check it instead of only trusting the file's own claims. */
+  proof: z
+    .object({
+      keyId: z.string().min(1),
+      signature: z.string().min(1),
+    })
+    .optional(),
+  /** Best-effort, optional: absent whenever the TSA was unreachable, timed out, rejected the
+   * request, or returned a response that didn't bind to this exact content -- absence is never a
+   * failure, see rfc3161-timestamp.ts. Present only once a real external timestamping authority
+   * has actually confirmed this content, never a caller-supplied claim. */
+  rfc3161_timestamp: z
+    .object({
+      schema_version: z.literal("rfc3161-timestamp@1.0"),
+      tsa_url: z.string().min(1),
+      timestamped_sha256: Sha256HexSchema,
+      gen_time: z.string().min(1),
+      token_der_base64: z.string().min(1),
+    })
+    .optional(),
 });
 
 export type EvidencePackage = z.infer<typeof EvidenceSchema>;

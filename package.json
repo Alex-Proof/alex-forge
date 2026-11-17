@@ -26,6 +26,10 @@
     "vitest": "^5.0.5"
   },
   "dependencies": {
+    "@peculiar/asn1-cms": "^2.11.1",
+    "@peculiar/asn1-schema": "^2.11.1",
+    "@peculiar/asn1-tsp": "^2.11.1",
+    "@peculiar/asn1-x509": "^2.11.1",
     "adm-zip": "^0.6.1",
     "zod": "^4.6.7"
   }

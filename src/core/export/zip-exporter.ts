@@ -130,3 +130,31 @@ export function readArtifactAndEvidenceFromZip(zipPath: string, artifactFileName
   const evidence = JSON.parse(evidenceEntry.getData().toString("utf-8"));
   return { artifactBytes, evidence };
 }
+
+/**
+ * Same read-back, but for a third party who only has the ZIP itself and never watched it get
+ * built -- it doesn't know the artifact's file name up front, so it reads evidence.json first and
+ * takes `artifact.fileName` from there, exactly like independentlyVerify will when it later
+ * re-derives everything else from this same raw evidence value.
+ */
+export function readPackageFromZip(zipPath: string): ReadBackResult {
+  const zip = new AdmZip(zipPath);
+  const evidenceEntry = zip.getEntry("evidence.json");
+  if (!evidenceEntry) {
+    throw new Error("package is missing required entry: evidence.json");
+  }
+  const evidence = JSON.parse(evidenceEntry.getData().toString("utf-8"));
+  const fileName =
+    typeof evidence === "object" && evidence !== null
+      ? (evidence as { artifact?: { fileName?: unknown } }).artifact?.fileName
+      : undefined;
+  if (typeof fileName !== "string") {
+    throw new Error("evidence.json is missing a string artifact.fileName; cannot locate the artifact entry");
+  }
+  const artifactEntry = zip.getEntry(`artifact/${fileName}`);
+  if (!artifactEntry) {
+    throw new Error(`package is missing required entry: artifact/${fileName}`);
+  }
+  const artifactBytes = new Uint8Array(artifactEntry.getData());
+  return { artifactBytes, evidence };
+}

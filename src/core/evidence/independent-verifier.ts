@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import { EvidenceSchema, type EvidencePackage } from "./schema.js";
+import { canonicalJson } from "./canonical-json.js";
+import { forgeVerify } from "./keystore.js";
+import { verifyRfc3161Binding, verifyRfc3161TsaChain } from "./rfc3161-timestamp.js";
 
 /**
  * A second, independently implemented verifier. This file deliberately imports nothing from
@@ -33,13 +36,52 @@ function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-export function independentlyVerify(rawEvidence: unknown, artifactBytes: Uint8Array): IndependentVerificationResult {
+/**
+ * `trustedPublicKeyPem`, when given, must come from somewhere other than the evidence file
+ * itself (a published trust anchor, a prior catalog entry) -- an embedded public key would let a
+ * forger regenerate both a fresh keypair and a matching signature. Omitting it keeps the old,
+ * signature-blind behavior (structural + hash checks only), which is what every pre-existing
+ * caller and test still relies on.
+ */
+export function independentlyVerify(
+  rawEvidence: unknown,
+  artifactBytes: Uint8Array,
+  trustedPublicKeyPem?: string,
+): IndependentVerificationResult {
   const schemaResult = EvidenceSchema.safeParse(rawEvidence);
   if (!schemaResult.success) {
     return { verified: false, reasons: [`evidence failed schema validation: ${schemaResult.error.message}`] };
   }
   const evidence = schemaResult.data;
   const reasons: string[] = [];
+
+  if (trustedPublicKeyPem !== undefined) {
+    if (!evidence.proof) {
+      reasons.push("evidence carries no proof (signature) but a trusted public key was supplied");
+    } else {
+      const { proof, ...unsigned } = evidence;
+      const digest = createHash("sha256").update(canonicalJson(unsigned)).digest();
+      if (!forgeVerify(trustedPublicKeyPem, digest, proof.signature)) {
+        reasons.push("signature does not verify against the supplied trusted public key");
+      }
+    }
+  }
+
+  // RFC3161 is best-effort and optional (rfc3161-timestamp.ts): absence is never a reason to
+  // fail, exactly like every pre-existing evidence package that predates this field. Only when a
+  // timestamp IS present does it have to actually hold up -- both the hash binding (including
+  // the token's own cryptographically signed hash, not just the self-declared field) and the TSA
+  // signature/certificate chain against the pinned FreeTSA root.
+  if (evidence.rfc3161_timestamp) {
+    const binding = verifyRfc3161Binding(evidence);
+    if (!binding.ok) {
+      reasons.push(`rfc3161 timestamp binding check failed: ${binding.reason ?? "unknown"}`);
+    }
+    const chain = verifyRfc3161TsaChain(evidence.rfc3161_timestamp);
+    if (!chain.ok) {
+      reasons.push(`rfc3161 timestamp TSA chain check failed: ${chain.reason ?? "unknown"}`);
+    }
+  }
 
   const recomputedHash = sha256Hex(artifactBytes);
   if (recomputedHash !== evidence.artifact.sha256) {
