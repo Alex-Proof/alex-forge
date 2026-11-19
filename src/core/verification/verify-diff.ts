@@ -76,7 +76,15 @@ function buildScript(fixture: DiffVerificationFixture): { script: string; stepNa
   const lines = [fixture.setupCommand];
   for (const step of steps) {
     lines.push(`echo "${STEP_START(step.name)}"`);
-    lines.push(`${step.command} 2>&1`);
+    // Jeder Step laeuft in einer eigenen Subshell: mehrere Step-Befehle (precondition_oracle,
+    // apply_check, postcondition_oracle) enden selbst mit `exit N`, um ihren Verdikt zu
+    // signalisieren. Ohne diese Klammerung wuerde dieses `exit` das gesamte sh-c-Skript sofort
+    // beenden (es ist sonst EIN zusammenhaengender Top-Level-Lauf) -- noch vor der eigenen
+    // EXIT-Marker-Zeile und allen folgenden Steps. Gefunden 19.11.2026: genau dieser Fehler liess
+    // in CI (echtes Docker, erster echter Lauf ueberhaupt -- siehe docs/ASSUMPTIONS.md A-026)
+    // ausnahmslos jeden Check auf "not_verified" zurueckfallen, weil parseSteps() beim allerersten
+    // Step (precondition_oracle) schon keinen vollstaendigen START/EXIT-Marker mehr fand.
+    lines.push(`( ${step.command} ) 2>&1`);
     lines.push(`echo "${STEP_EXIT(step.name, "$?")}"`);
   }
   return { script: lines.join("\n"), stepNames: steps.map((s) => s.name) };
