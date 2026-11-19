@@ -48,6 +48,7 @@ describe("forge repair --format extension (end to end, log to ZIP or honest reje
         "--json",
       ]);
 
+      console.error("DIAG forge-repair-extension exitCode:", result.exitCode, "stderr:", result.stderr);
       if (result.exitCode === 0) {
         // A real VS Code Extension Host launch succeeded in this environment: full approval,
         // same shape as the sh/html end-to-end tests.
