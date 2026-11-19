@@ -54,7 +54,6 @@ describe("verifyDiff fixture (real sandbox, real patch, real independent oracle)
         await writeFile(path.join(sandbox.hostWorkDir, "greet.sh"), GREET_SCRIPT_BUGGY, { mode: 0o755 });
 
         const summary = await verifyDiff(sandbox, baseFixture(FIX_DIFF));
-        console.error("DIAG test1", JSON.stringify(summary));
 
         expect(summary.status).toBe("passed");
         expect(summary.level).toBe("L3_state_transition_verified");
