@@ -48,9 +48,6 @@ describe("forge repair --format html (end to end, log to ZIP)", () => {
         "--json",
       ]);
 
-      if (result.exitCode !== 0) {
-        console.error("DIAG forge-repair-html stderr:", result.stderr);
-      }
       expect(result.exitCode).toBe(0);
       const report = JSON.parse(result.stdout);
       expect(report.status).toBe("approved");

@@ -59,7 +59,10 @@ export function independentlyVerify(
     if (!evidence.proof) {
       reasons.push("evidence carries no proof (signature) but a trusted public key was supplied");
     } else {
-      const { proof, ...unsigned } = evidence;
+      // rfc3161_timestamp is excluded too: attachRfc3161Timestamp (rfc3161-timestamp.ts) adds it
+      // AFTER signEvidence has already signed, so the signed digest never covered it -- only
+      // {proof, rfc3161_timestamp} together reconstruct what was actually signed.
+      const { proof, rfc3161_timestamp: _rfc3161Timestamp, ...unsigned } = evidence;
       const digest = createHash("sha256").update(canonicalJson(unsigned)).digest();
       if (!forgeVerify(trustedPublicKeyPem, digest, proof.signature)) {
         reasons.push("signature does not verify against the supplied trusted public key");
