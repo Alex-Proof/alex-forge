@@ -10,7 +10,9 @@ const sandboxOptions: SandboxOptions = {
   cpuLimit: "0.5",
   memoryLimitMb: 128,
   processLimit: 32,
-  image: "alpine:3.20",
+  // alpine:3.20s BusyBox hat kein patch-Applet (gefunden 19.11.2026, erster echter Docker-Lauf) --
+  // eigenes, einmal gebautes Image mit echtem GNU patch statt einer ungeprueften Stock-Image-Annahme.
+  image: "ghcr.io/alex-proof/forge-sandbox-alpine-patch:3.20",
 };
 
 // Real fault, real fix, real independent oracle -- nothing mocked, matching this repo's own rule
