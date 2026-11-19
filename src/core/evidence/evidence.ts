@@ -12,7 +12,7 @@ function sha256Hex(bytes: Uint8Array): string {
 export interface BuildEvidenceInput {
   artifactId: string;
   artifactFileName: string;
-  artifactFormat: "cli" | "html" | "extension";
+  artifactFormat: "cli" | "html" | "extension" | "diff";
   artifactContent: Uint8Array;
   /** The already-redacted log text the diagnosis was produced from. */
   sourceLogRedactedText: string;

@@ -37,7 +37,7 @@ export const EvidenceSchema = z.object({
   createdAt: z.string().datetime(),
   artifact: z.object({
     fileName: z.string().min(1),
-    format: z.enum(["cli", "html", "extension"]),
+    format: z.enum(["cli", "html", "extension", "diff"]),
     sha256: Sha256HexSchema,
     sizeBytes: z.number().int().nonnegative(),
   }),
